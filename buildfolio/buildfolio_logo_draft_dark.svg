@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 192" width="100%" height="100%">
+  <defs>
+    <mask id="node-holes">
+      <rect width="100%" height="100%" fill="white" />
+      <circle cx="192" cy="48" r="8" fill="black" />
+      <circle cx="252" cy="96" r="8" fill="black" />
+      <circle cx="156" cy="144" r="8" fill="black" />
+    </mask>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur" />
+      <feComponentTransfer in="blur" result="glow">
+        <feFuncA type="linear" slope="1.2" />
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode in="glow" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#glow)">
+    <g mask="url(#node-holes)" fill="#C7E9F7" stroke="#C7E9F7">
+      <line x1="48" y1="48" x2="192" y2="48" stroke-width="10" stroke-linecap="round" />
+      <line x1="48" y1="96" x2="252" y2="96" stroke-width="10" stroke-linecap="round" />
+      <line x1="48" y1="144" x2="156" y2="144" stroke-width="10" stroke-linecap="round" />
+      <circle cx="192" cy="48" r="18" stroke="none" />
+      <circle cx="252" cy="96" r="18" stroke="none" />
+      <circle cx="156" cy="144" r="18" stroke="none" />
+    </g>
+  </g>
+</svg>
