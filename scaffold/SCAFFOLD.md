@@ -5,6 +5,27 @@
 
 ---
 
+## Two-skill system
+
+This infra scaffold pairs with a **code scaffold** skill that generates the actual codebase (folder structure, `package.json` with pinned deps, boilerplate files). They're designed to run in sequence for a net-new project:
+
+```
+Step 1 — Code scaffold   → generates repo + codebase from your stack template
+Step 2 — Infra scaffold  → provisions all services, fills .env.local with real keys
+```
+
+**Use independently when:**
+- Code scaffold only → adding a new service module to an existing project
+- Infra scaffold only → re-provisioning services, rotating keys, adding a service to an existing codebase
+
+**Invoke code scaffold:** "Scaffold a new [Vite+Express / Next.js / mobile] app called [name]"
+**Invoke infra scaffold:** "Pull up the scaffold skill and spin up [name] on [domain]"
+**Invoke both:** "Full project scaffold for [name] — [one sentence description]"
+
+> The `.env.example` produced by the code scaffold is the exact template for what this script writes to `.env.local` in Phase 9.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -51,6 +72,13 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 ```
 1. Spaceship → point NS to Vercel (ns1/ns2.vercel-dns.com)
    ⏱ Do this FIRST — propagation takes time, want it ticking in background
+```
+
+### PHASE 0 — Code scaffold (run this first)
+```
+0. Run code scaffold → generates codebase, creates local repo directory
+   ✅ This creates the GitHub repo that Vercel links to in Phase 2
+   Invoke: "Scaffold a new [type] app called [name] with [services]"
 ```
 
 ### PHASE 2 — Project skeleton
@@ -118,7 +146,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 ### PHASE 9 — Collect & inject all env vars
 ```
 12. Write .env.local + push to Vercel:
-    DATABASE_URL, DATABASE_AUTH_TOKEN
+    TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
     UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN
     QSTASH_URL, QSTASH_TOKEN, QSTASH_CURRENT/NEXT_SIGNING_KEY
     R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
@@ -210,7 +238,7 @@ echo ".scaffold-secrets" >> .gitignore
 | Date | Change |
 |---|---|
 | 2026-05 | Initial version — all services mapped, dry-run script built |
-| | |
+| 2026-05 | Added Phase 0 (code scaffold), two-skill system docs, aligned env var names (DATABASE_URL → TURSO_DATABASE_URL) |
 
 ---
 
