@@ -49,8 +49,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | website-assets folder | 🟢 Automated | git push |
 | Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
 | Turso DB | 🟢 Automated | `turso` CLI |
-| Upstash Redis | 🔴 Manual | API changed — `/v2/redis/database` POST deprecated, no replacement found (May 2026). Create via console.upstash.com |
-| Upstash QStash | 🔴 Manual | Token only retrievable from console.upstash.com/qstash — no management API endpoint |
+| Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Requires PayG plan (payment method added) — free tier = 1 DB max |
+| Upstash QStash | 🟡 Partial | `QSTASH_TOKEN` = manual (copy from console.upstash.com/qstash, one-time). Signing keys = automated: `GET https://qstash.upstash.io/v2/keys` with Bearer token → returns `current` + `next` |
 | Cloudflare R2 bucket | 🟢 Automated | `wrangler` CLI |
 | Resend domain + key | 🟢 Automated | REST API |
 | OpenRouter per-project key | 🟢 Automated | Provisioning API |
@@ -257,8 +257,8 @@ echo ".scaffold-secrets" >> .gitignore
 - **Google OAuth consent screen**: `gcloud alpha iap oauth-*` works but is deprecated (IAP API shutdown pending). Watch for gcloud dropping these commands.
 - **Clerk social login config**: The Platform API (`dashboard.clerk.com`) covers app creation, but wiring Google CLIENT_ID/SECRET still goes through the dashboard as of May 2026.
 - **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
-- **Upstash Redis creation API**: `POST /v2/redis/database` is deprecated (returns "regional db creation is deprecated") and no v3/global replacement was found as of May 2026. Create manually at console.upstash.com, then grab `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` from the database detail page.
-- **Upstash QStash token**: Not retrievable via Management API. Copy `QSTASH_TOKEN` + signing keys from console.upstash.com/qstash.
+- **Upstash Redis**: `POST /v2/redis/database` works — correct fields are `database_name` (not `name`), `platform` (aws/gcp, required), `primary_region`. Free tier = 1 DB max; add payment method at console.upstash.com to use PayG for multiple DBs. Auth: Basic `email:api_key`.
+- **Upstash QStash token**: `QSTASH_TOKEN` must be copied manually from console.upstash.com/qstash (no Management API endpoint). Once you have it, signing keys are automated: `GET https://qstash.upstash.io/v2/keys` with `Authorization: Bearer $QSTASH_TOKEN`.
 - **Vercel CLI**: Dropped from scaffold.js — replaced by REST API (`https://api.vercel.com`). Was bash-only due to heredoc `<<< "value"` in `vercel env add`. REST API is cross-platform and needs only `VERCEL_TOKEN`.
 
 ---
