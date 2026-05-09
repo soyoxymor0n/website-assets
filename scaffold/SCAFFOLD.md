@@ -47,7 +47,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 |---|---|---|
 | GitHub repo | 🟢 Automated | `gh` CLI |
 | website-assets folder | 🟢 Automated | git push |
-| Vercel project + domain | 🟢 Automated | `vercel` CLI |
+| Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
 | Turso DB | 🟢 Automated | `turso` CLI |
 | Upstash Redis | 🟢 Automated | REST API |
 | Upstash QStash | 🟢 Automated | REST API |
@@ -62,8 +62,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
 | Vercel DNS records | 🟡 Mixed | Automated for Resend; manual for Clerk/Google (2nd pass) |
-| Env vars → Vercel + .env.local | 🟢 Automated | Written at end of script |
-| Production deploy | 🟢 Automated | `vercel --prod` |
+| Env vars → Vercel + .env.local | 🟢 Automated | REST API — `POST /v10/projects/{id}/env?upsert=true` (replaces `vercel env add` heredocs — was bash-only, broke on Windows) |
+| Production deploy | 🟢 Automated | REST API — `POST /v13/deployments` with `deploymentId` to redeploy |
 
 ---
 
@@ -202,7 +202,7 @@ Vercel DNS ← Clerk + Google:
 
 ### CLI tools
 ```bash
-npm install -g vercel
+# Only these still required (Vercel CLI dropped — replaced by REST API):
 brew install tursodatabase/tap/turso  # or: curl -sSfL https://get.tur.so/install.sh | bash
 npm install -g wrangler
 gh auth login
@@ -210,8 +210,26 @@ gcloud auth login
 gcloud components install alpha      # for iap commands
 ```
 
+### Vercel REST API (replaces Vercel CLI)
+Base URL: `https://api.vercel.com`
+Auth: `Authorization: Bearer $VERCEL_TOKEN`
+SDK (optional, type-safe): `npm i @vercel/sdk`
+OpenAPI spec: https://openapi.vercel.sh/
+
+Key endpoints used by scaffold.js:
+- Create project: `POST /v9/projects`
+- Add domain (+ www→non-www redirect): `POST /v10/projects/{id}/domains` — body: `{ name, redirect, redirectStatusCode: 301 }`
+- Verify domain: `POST /v9/projects/{id}/domains/{domain}/verify`
+- DNS records: `POST /v2/domains/{domain}/records` — types: A, AAAA, CNAME, MX, TXT, NS, ALIAS, CAA, SRV, HTTPS
+- List DNS records: `GET /v5/domains/{domain}/records`
+- Delete DNS record: `DELETE /v2/domains/{domain}/records/{recordId}`
+- Add/upsert env var: `POST /v10/projects/{id}/env?upsert=true`
+- List env vars: `GET /v9/projects/{id}/env`
+- Redeploy: `POST /v13/deployments` with `{ deploymentId: "<existing-id>", name: "<project-name>" }`
+
 ### Secrets (in .scaffold-secrets — never commit this file!)
 ```bash
+VERCEL_TOKEN=...                             # vercel.com/account/tokens → Create Token
 SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-manager/ → API key
 SPACESHIP_SECRET_KEY=...                     # spaceship.com/application/api-manager/ → API secret
                                              # Required scopes: domains:write, dnsrecords:write, dnsrecords:read
@@ -239,7 +257,7 @@ echo ".scaffold-secrets" >> .gitignore
 - **Clerk social login config**: The Platform API (`dashboard.clerk.com`) covers app creation, but wiring Google CLIENT_ID/SECRET still goes through the dashboard as of May 2026.
 - **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
 - **Upstash region**: Hardcoded to `eu-west-1` in script — change if you're deploying primarily outside Europe.
-- **Vercel env add**: Script uses heredoc (`<<< "value"`) — works on bash/zsh, may need adjustment if running on Windows directly (use WSL or Git Bash).
+- **Vercel CLI**: Dropped from scaffold.js — replaced by REST API (`https://api.vercel.com`). Was bash-only due to heredoc `<<< "value"` in `vercel env add`. REST API is cross-platform and needs only `VERCEL_TOKEN`.
 
 ---
 
@@ -250,6 +268,7 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Initial version — all services mapped, dry-run script built |
 | 2026-05 | Added Phase 0 (code scaffold), two-skill system docs, aligned env var names (DATABASE_URL → TURSO_DATABASE_URL) |
 | 2026-05 | Spaceship upgraded 🔴→🟢: confirmed REST API at spaceship.dev/api/v1 — NS change + DNS records both automated; added SPACESHIP_PUBLISHABLE_KEY + SPACESHIP_SECRET_KEY to secrets |
+| 2026-05 | Vercel CLI dropped from scaffold.js — replaced by REST API (api.vercel.com). Fixes Windows incompatibility (heredoc `vercel env add`). Add VERCEL_TOKEN to .scaffold-secrets. SDK available: `npm i @vercel/sdk` |
 
 ---
 
