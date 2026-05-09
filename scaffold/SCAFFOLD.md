@@ -59,7 +59,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Google branding verification | 🔴 Always manual | Human review, weeks |
 | Clerk app creation | 🟡 Partial | Platform API exists; social login + branding = dashboard |
 | Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
-| Spaceship NS change | 🔴 Always manual | No public API |
+| Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
+| Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
 | Vercel DNS records | 🟡 Mixed | Automated for Resend; manual for Clerk/Google (2nd pass) |
 | Env vars → Vercel + .env.local | 🟢 Automated | Written at end of script |
 | Production deploy | 🟢 Automated | `vercel --prod` |
@@ -70,8 +71,14 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 
 ### PHASE 1 — Start propagation clock
 ```
-1. Spaceship → point NS to Vercel (ns1/ns2.vercel-dns.com)
+1. Spaceship → point NS to Vercel (ns1/ns2.vercel-dns.com)  ← NOW AUTOMATED
    ⏱ Do this FIRST — propagation takes time, want it ticking in background
+
+   API: PUT https://spaceship.dev/api/v1/domains/{domain}/nameservers
+   Headers: X-API-Key: $SPACESHIP_PUBLISHABLE_KEY
+            X-API-Secret: $SPACESHIP_SECRET_KEY
+   Body: { "nameservers": ["ns1.vercel-dns.com", "ns2.vercel-dns.com"] }
+   Required scope: domains:write
 ```
 
 ### PHASE 0 — Code scaffold (run this first)
@@ -205,6 +212,9 @@ gcloud components install alpha      # for iap commands
 
 ### Secrets (in .scaffold-secrets — never commit this file!)
 ```bash
+SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-manager/ → API key
+SPACESHIP_SECRET_KEY=...                     # spaceship.com/application/api-manager/ → API secret
+                                             # Required scopes: domains:write, dnsrecords:write, dnsrecords:read
 OPENROUTER_PROVISIONING_KEY=sk-or-v1-...    # create once at openrouter.ai/settings/keys → type: Provisioning
 UPSTASH_MANAGEMENT_API_KEY=...               # upstash.com → Account → Management API
 RESEND_API_KEY=re_...                        # your global key (script creates per-project subkeys)
@@ -224,7 +234,7 @@ echo ".scaffold-secrets" >> .gitignore
 
 ## Known Limitations / Things to Watch
 
-- **Spaceship**: No API. Always manual. Accept it and move on.
+- **Spaceship**: Full REST API available at `https://spaceship.dev/api/v1`. Auth via `X-API-Key` + `X-API-Secret` headers. Key management at `spaceship.com/application/api-manager/`. NS changes need `domains:write` scope; DNS record CRUD needs `dnsrecords:write`/`dnsrecords:read`. Both are fully automatable.
 - **Google OAuth consent screen**: `gcloud alpha iap oauth-*` works but is deprecated (IAP API shutdown pending). Watch for gcloud dropping these commands.
 - **Clerk social login config**: The Platform API (`dashboard.clerk.com`) covers app creation, but wiring Google CLIENT_ID/SECRET still goes through the dashboard as of May 2026.
 - **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
@@ -239,6 +249,7 @@ echo ".scaffold-secrets" >> .gitignore
 |---|---|
 | 2026-05 | Initial version — all services mapped, dry-run script built |
 | 2026-05 | Added Phase 0 (code scaffold), two-skill system docs, aligned env var names (DATABASE_URL → TURSO_DATABASE_URL) |
+| 2026-05 | Spaceship upgraded 🔴→🟢: confirmed REST API at spaceship.dev/api/v1 — NS change + DNS records both automated; added SPACESHIP_PUBLISHABLE_KEY + SPACESHIP_SECRET_KEY to secrets |
 
 ---
 
