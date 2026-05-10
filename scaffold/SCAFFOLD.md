@@ -49,19 +49,24 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | website-assets folder | 🟢 Automated | git push |
 | Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
 | Turso DB | 🟢 Automated | `turso` CLI |
-| Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Requires PayG plan (payment method added) — free tier = 1 DB max |
+| Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Free tier = 1 DB max — if already taken, fetch existing DB via `GET /v2/redis/database/{id}` and reuse |
 | Upstash QStash | 🟡 Partial | `QSTASH_TOKEN` = manual (copy from console.upstash.com/qstash, one-time). Signing keys = automated: `GET https://qstash.upstash.io/v2/keys` with Bearer token → returns `current` + `next` |
 | Cloudflare R2 bucket | 🟢 Automated | `wrangler` CLI |
 | Resend domain + key | 🟢 Automated | REST API |
 | OpenRouter per-project key | 🟢 Automated | Provisioning API |
 | Google Cloud project + APIs | 🟢 Automated | `gcloud` CLI |
-| Google OAuth client | 🟡 Partial | Consent screen = manual; gcloud alpha path is deprecated |
+| Google OAuth client | 🔴 Always manual | IAP brand API requires Workspace org (personal accounts blocked). gcloud alpha needs admin install. Consent screen + client creation = Cloud Console only |
+| Google OAuth redirect URI update | 🔴 Always manual | Same org restriction as consent screen. Cloud Console only: Credentials → client → Authorized redirect URIs |
 | Google branding verification | 🔴 Always manual | Human review, weeks |
-| Clerk app creation | 🟡 Partial | Platform API exists; social login + branding = dashboard |
+| Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
+| Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → returns all 5 CNAME targets; push each to Vercel |
+| Clerk Google OAuth config | 🔴 Always manual | No Backend API endpoint for social_connections. Dashboard: Configure → SSO → Google |
+| Clerk keys → Vercel | 🟢 Automated | Push pk_live/sk_live to production env; pk_test/sk_test to preview+development |
 | Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
-| Vercel DNS records | 🟡 Mixed | Automated for Resend; manual for Clerk/Google (2nd pass) |
+| Spaceship email forwarding DNS | 🟡 Partial | DNS records (MX + SPF TXT) pushed to Vercel automatically; "Verify DNS changes" button in Spaceship UI = always manual (no API endpoint) |
+| Vercel DNS records | 🟡 Mixed | Automated for Resend + email forwarding MX/SPF; manual for Clerk/Google (2nd pass) |
 | Env vars → Vercel + .env.local | 🟢 Automated | REST API — `POST /v10/projects/{id}/env?upsert=true` (replaces `vercel env add` heredocs — was bash-only, broke on Windows) |
 | Production deploy | 🟢 Automated | REST API — `POST /v13/deployments` with `deploymentId` to redeploy |
 
@@ -254,12 +259,13 @@ echo ".scaffold-secrets" >> .gitignore
 ## Known Limitations / Things to Watch
 
 - **Spaceship**: Full REST API available at `https://spaceship.dev/api/v1`. Auth via `X-API-Key` + `X-API-Secret` headers. Key management at `spaceship.com/application/api-manager/`. NS changes need `domains:write` scope; DNS record CRUD needs `dnsrecords:write`/`dnsrecords:read`. Both are fully automatable.
-- **Google OAuth consent screen**: `gcloud alpha iap oauth-*` works but is deprecated (IAP API shutdown pending). Watch for gcloud dropping these commands.
+- **Google OAuth consent screen + client**: Fully manual for personal Google accounts. IAP brand API (`iap.googleapis.com/v1/projects/{id}/brands`) requires a Google Workspace org — personal projects get `"Project must belong to an organization"`. `gcloud alpha` components need admin rights to install. `clientauthconfig.googleapis.com` returns 404. No working programmatic path exists for personal accounts. Use Cloud Console: console.cloud.google.com → APIs & Services → OAuth consent screen, then Credentials → Create OAuth client ID.
 - **Clerk social login config**: The Platform API (`dashboard.clerk.com`) covers app creation, but wiring Google CLIENT_ID/SECRET still goes through the dashboard as of May 2026.
 - **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
-- **Upstash Redis**: `POST /v2/redis/database` works — correct fields are `database_name` (not `name`), `platform` (aws/gcp, required), `primary_region`. Free tier = 1 DB max; add payment method at console.upstash.com to use PayG for multiple DBs. Auth: Basic `email:api_key`.
+- **Upstash Redis**: `POST /v2/redis/database` works — correct fields are `database_name` (not `name`), `platform` (aws/gcp, required), `primary_region`. Free tier = 1 DB max. If the slot is taken, fetch the existing DB via `GET /v2/redis/database/{id}` — `rest_token` and `endpoint` are returned directly, no manual copy needed. Auth: Basic `email:api_key`.
 - **Upstash QStash token**: `QSTASH_TOKEN` must be copied manually from console.upstash.com/qstash (no Management API endpoint). Once you have it, signing keys are automated: `GET https://qstash.upstash.io/v2/keys` with `Authorization: Bearer $QSTASH_TOKEN`.
 - **Vercel CLI**: Dropped from scaffold.js — replaced by REST API (`https://api.vercel.com`). Was bash-only due to heredoc `<<< "value"` in `vercel env add`. REST API is cross-platform and needs only `VERCEL_TOKEN`.
+- **Cloudflare R2 access keys**: R2 S3-compatible credentials (Access Key ID + Secret) are created via `POST /accounts/{id}/tokens` — NOT `/r2/tokens` (no such route) and NOT `/user/tokens`. Use account-scope (`com.cloudflare.api.account.{id}`) for all four R2 permissions (Storage Read, Storage Write, Bucket Item Read, Bucket Item Write). `R2_ACCESS_KEY_ID` = response `id`; `R2_SECRET_ACCESS_KEY` = SHA-256 hex of response `value`. The `CLOUDFLARE_API_TOKEN` in `.scaffold-secrets` must have "Account API Tokens: Edit" permission to create tokens via API.
 
 ---
 
