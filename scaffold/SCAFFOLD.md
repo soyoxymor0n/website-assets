@@ -56,10 +56,15 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | CloudMailin address target | 🟡 Partial | Address + webhook URL = dashboard only (step 2 of setup). DNS MX record → Vercel = automated. Env var `CLOUDMAILIN_WEBHOOK_SECRET` = automated. |
 | Resend domain + key | 🟢 Automated | REST API |
 | OpenRouter per-project key | 🟢 Automated | Provisioning API |
-| Google Cloud project + APIs | 🟢 Automated | `gcloud` CLI |
-| Google OAuth client | 🔴 Always manual | IAP brand API requires Workspace org (personal accounts blocked). gcloud alpha needs admin install. Consent screen + client creation = Cloud Console only |
-| Google OAuth redirect URI update | 🔴 Always manual | Same org restriction as consent screen. Cloud Console only: Credentials → client → Authorized redirect URIs |
-| Google branding verification | 🔴 Always manual | Human review, weeks |
+| Google Cloud project + APIs | 🟢 Automated | `gcloud` CLI — enable gmail, calendar-json, people APIs |
+| Google OAuth consent screen | 🔴 Always manual | IAP brand API requires Workspace org (personal accounts blocked). Cloud Console only: APIs & Services → OAuth consent screen |
+| Google OAuth client ID/secret | 🔴 Always manual | Cloud Console only: Credentials → Create OAuth client ID → Web application → add redirect URIs |
+| Google OAuth redirect URI update | 🔴 Always manual | Same restriction. Cloud Console: Credentials → client → Authorized redirect URIs |
+| Google branding verification | 🔴 Always manual | Required for Gmail + Calendar scopes in production. Human review, 1–6 weeks. Test users bypass this. |
+| Microsoft Entra app registration | 🔴 Always manual | portal.azure.com → Entra ID → App registrations. No CLI or API for initial registration in personal accounts. |
+| Microsoft OAuth redirect URIs | 🔴 Always manual | Entra portal: Authentication → Add platform → Web |
+| Microsoft API permissions | 🔴 Always manual | Entra portal: API permissions → Microsoft Graph → Delegated |
+| Microsoft client secret | 🔴 Always manual | Entra portal: Certificates & secrets → New client secret (copy value immediately) |
 | Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
 | Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → returns all 5 CNAME targets; push each to Vercel |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
@@ -131,12 +136,23 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 
 ### PHASE 5 — Google Cloud (before Clerk — Clerk needs the client ID/secret)
 ```
-8. Google Cloud → create project
-               → enable APIs
-               → configure OAuth consent screen (PARTIALLY MANUAL)
-                 • app name, logo, privacy policy URL, ToS URL
-                 ⚠ /privacy must exist in your template at deploy time!
-               → create OAuth Web Client ID → CLIENT_ID + CLIENT_SECRET
+8. Google Cloud → create project (automated: gcloud projects create)
+               → enable APIs (automated):
+                 gcloud services enable gmail.googleapis.com \
+                   calendar-json.googleapis.com people.googleapis.com \
+                   --project={project-id}
+               → configure OAuth consent screen (MANUAL — Cloud Console):
+                 console.cloud.google.com → APIs & Services → OAuth consent screen
+                 • User type: External
+                 • App name, support email, logo, privacy/ToS URLs
+                 • Scopes: userinfo.email, gmail.readonly, calendar.events
+                 • Add test users
+                 ⚠ /privacy and /terms must exist at deploy time!
+               → create OAuth Web Client ID (MANUAL — Cloud Console):
+                 Credentials → Create Credentials → OAuth client ID → Web application
+                 • Redirect URIs: http://localhost:3000/api/auth/google/callback
+                                  https://{domain}/api/auth/google/callback
+               → collect: GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
                → get site verification TXT → (goes to Vercel DNS in phase 7)
 ```
 
@@ -159,10 +175,21 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
               → Google site verification TXT
 ```
 
-### PHASE 8 — Close the Google ↔ Clerk loop
+### PHASE 8 — Close the Google ↔ Clerk loop + Microsoft
 ```
 11. Google Cloud → update OAuth client: add real Clerk redirect URI
-               → (optional) submit for branding verification
+               → (optional) submit for branding verification (Gmail/Calendar scopes)
+
+12. Microsoft Entra (MANUAL — portal.azure.com → Entra ID → App registrations):
+    → New registration:
+      • Name: {app name}
+      • Account types: Multitenant + personal Microsoft accounts
+      • Redirect URI: Web → https://{domain}/api/auth/outlook/callback
+    → Authentication: add http://localhost:3000/api/auth/outlook/callback
+    → Certificates & secrets → New client secret (24 months) → copy Value
+    → API permissions → Microsoft Graph → Delegated:
+      Mail.Read, Calendars.ReadWrite, User.Read, offline_access
+    → collect: MICROSOFT_CLIENT_ID (Application ID) + MICROSOFT_CLIENT_SECRET
 ```
 
 ### PHASE 9 — Collect & inject all env vars
@@ -174,7 +201,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
     R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     RESEND_API_KEY
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY
-    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET    ← from Cloud Console OAuth client
+    MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET  ← from Entra App registration
     NEXT_PUBLIC_GOOGLE_PROJECT_ID
     GEMINI_API_KEY                  ← global, from your vault
     OPENROUTER_API_KEY              ← per-project
@@ -273,6 +301,7 @@ echo ".scaffold-secrets" >> .gitignore
 ## Known Limitations / Things to Watch
 
 - **Spaceship**: Full REST API available at `https://spaceship.dev/api/v1`. Auth via `X-API-Key` + `X-API-Secret` headers. Key management at `spaceship.com/application/api-manager/`. NS changes need `domains:write` scope; DNS record CRUD needs `dnsrecords:write`/`dnsrecords:read`. Both are fully automatable.
+- **Microsoft Entra app registration**: Fully manual. portal.azure.com → Entra ID → App registrations → New registration. No CLI or API path for personal Microsoft accounts. Required fields: name, account type (multitenant + personal), redirect URIs. Client secret must be copied immediately after creation (only shown once). Permissions: `Mail.Read`, `Calendars.ReadWrite`, `User.Read`, `offline_access` — all Delegated (not Application). Secret expiry: max 24 months; add a calendar reminder to rotate before expiry.
 - **Google OAuth consent screen + client**: Fully manual for personal Google accounts. IAP brand API (`iap.googleapis.com/v1/projects/{id}/brands`) requires a Google Workspace org — personal projects get `"Project must belong to an organization"`. `gcloud alpha` components need admin rights to install. `clientauthconfig.googleapis.com` returns 404. No working programmatic path exists for personal accounts. Use Cloud Console: console.cloud.google.com → APIs & Services → OAuth consent screen, then Credentials → Create OAuth client ID.
 - **Clerk social login config**: `PATCH /v1/instance/social_connections/oauth_google` does NOT exist — returns 404. The Clerk Backend API has no endpoint for configuring social providers. **Do not attempt to automate this — you will get a 404 which can produce a false positive if error handling is sloppy.** Must be done in the dashboard: Configure → SSO → Google → toggle "Use custom credentials" → paste Client ID + Secret. There is no way to confirm success programmatically; verify in the dashboard UI after saving.
 - **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
@@ -292,6 +321,7 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Added Phase 0 (code scaffold), two-skill system docs, aligned env var names (DATABASE_URL → TURSO_DATABASE_URL) |
 | 2026-05 | Spaceship upgraded 🔴→🟢: confirmed REST API at spaceship.dev/api/v1 — NS change + DNS records both automated; added SPACESHIP_PUBLISHABLE_KEY + SPACESHIP_SECRET_KEY to secrets |
 | 2026-05 | Vercel CLI dropped from scaffold.js — replaced by REST API (api.vercel.com). Fixes Windows incompatibility (heredoc `vercel env add`). Add VERCEL_TOKEN to .scaffold-secrets. SDK available: `npm i @vercel/sdk` |
+| 2026-05 | Added Microsoft Entra (Outlook OAuth) and expanded Google OAuth docs. Both fully manual. Gmail + Calendar APIs now automated via gcloud. Phase 8 extended with Microsoft step. |
 | 2026-05 | Added CloudMailin for inbound email (F04 pattern). Account + address = manual; MX record + env var = automated. Secret is generated (not given by CloudMailin). MX target: `mx.cloudmailin.net.` priority 10. Free tier: 10k msg/month. |
 
 ---
