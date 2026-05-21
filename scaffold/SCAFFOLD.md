@@ -55,6 +55,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | CloudMailin account | 🔴 Always manual | No account creation API. Dashboard only: cloudmailin.com → Sign up |
 | CloudMailin address target | 🟡 Partial | Address + webhook URL = dashboard only (step 2 of setup). DNS MX record → Vercel = automated. Env var `CLOUDMAILIN_WEBHOOK_SECRET` = automated. |
 | Resend domain + key | 🟢 Automated | REST API |
+| VAPID keypair (Web Push) | 🟢 Automated | `npx web-push generate-vapid-keys --json` — generates P-256 EC pair locally, no external service |
 | OpenRouter per-project key | 🟢 Automated | Provisioning API |
 | Google Cloud project + APIs | 🟢 Automated | `gcloud` CLI — enable gmail, calendar-json, people APIs |
 | Google OAuth consent screen | 🔴 Always manual | IAP brand API requires Workspace org (personal accounts blocked). Cloud Console only: APIs & Services → OAuth consent screen |
@@ -200,6 +201,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
     QSTASH_URL, QSTASH_TOKEN, QSTASH_CURRENT/NEXT_SIGNING_KEY
     R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     RESEND_API_KEY
+    VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, NEXT_PUBLIC_VAPID_PUBLIC_KEY
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY
     GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET    ← from Cloud Console OAuth client
     MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET  ← from Entra App registration
@@ -323,6 +325,8 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Vercel CLI dropped from scaffold.js — replaced by REST API (api.vercel.com). Fixes Windows incompatibility (heredoc `vercel env add`). Add VERCEL_TOKEN to .scaffold-secrets. SDK available: `npm i @vercel/sdk` |
 | 2026-05 | Added Microsoft Entra (Outlook OAuth) and expanded Google OAuth docs. Both fully manual. Gmail + Calendar APIs now automated via gcloud. Phase 8 extended with Microsoft step. |
 | 2026-05 | Added CloudMailin for inbound email (F04 pattern). Account + address = manual; MX record + env var = automated. Secret is generated (not given by CloudMailin). MX target: `mx.cloudmailin.net.` priority 10. Free tier: 10k msg/month. |
+| 2026-05 | Added VAPID keypair generation step (Web Push, F15). Uses `npx web-push generate-vapid-keys --json` — no external service, just local key gen. Produces `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. |
+| 2026-05 | Phase 9 env push fully replaced with Vercel REST API (`POST /v10/projects/{id}/env?upsert=true`). Cross-platform (no bash heredoc). Reads project ID from `.vercel/project.json`. Requires `VERCEL_TOKEN` in `.scaffold-secrets`. |
 
 ---
 
