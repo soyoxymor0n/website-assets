@@ -63,7 +63,7 @@ Optional:
 
 Step IDs you can skip:
   spaceship, github, assets, vercel, turso, upstash-redis, upstash-qstash,
-  r2, resend, openrouter, google, clerk, dns-pass1, dns-pass2, env, deploy
+  r2, resend, openrouter, vapid, google, clerk, dns-pass1, dns-pass2, env, deploy
 
 Example:
   node scaffold.js --name myapp --domain myapp.com --gh-user patrickXYZ \\
@@ -412,6 +412,36 @@ collect("POLLINATIONS_API_KEY", "[manual — see enter.pollinations.ai]");
 await waitForEnter("Have you copied your Pollinations API key?");
 results.push({ id: "pollinations", label: "Pollinations API key", status: "manual", notes: "No API exists yet" });
 
+// VAPID keys (Web Push)
+if (step("vapid", "Generate VAPID keypair for Web Push notifications")) {
+  if (DRY_RUN) {
+    note("npx web-push generate-vapid-keys --json");
+    collect("VAPID_PUBLIC_KEY", "[vapid-public-key]");
+    collect("VAPID_PRIVATE_KEY", "[vapid-private-key]");
+    collect("NEXT_PUBLIC_VAPID_PUBLIC_KEY", "[vapid-public-key]");
+  } else {
+    try {
+      const vapidOut = execSync("npx web-push generate-vapid-keys --json", { encoding: "utf8" }).trim();
+      const vapid = JSON.parse(vapidOut);
+      collect("VAPID_PUBLIC_KEY", vapid.publicKey);
+      collect("VAPID_PRIVATE_KEY", vapid.privateKey);
+      collect("NEXT_PUBLIC_VAPID_PUBLIC_KEY", vapid.publicKey);
+      info(`VAPID keypair generated (${vapid.publicKey.slice(0, 20)}…)`);
+    } catch (e) {
+      console.error(c(RED, `    ✗ web-push not available: ${e.message}`));
+      manual("Generate VAPID keys manually and add to .scaffold-secrets", [
+        "npm install -g web-push  (or: npx web-push generate-vapid-keys --json)",
+        "VAPID_PUBLIC_KEY → also copy to NEXT_PUBLIC_VAPID_PUBLIC_KEY",
+        "VAPID_PRIVATE_KEY → keep secret, never expose to client",
+      ]);
+      collect("VAPID_PUBLIC_KEY", "[manual — see web-push generate-vapid-keys]");
+      collect("VAPID_PRIVATE_KEY", "[manual]");
+      collect("NEXT_PUBLIC_VAPID_PUBLIC_KEY", "[manual — same as VAPID_PUBLIC_KEY]");
+    }
+  }
+  results.push({ id: "vapid", label: "VAPID keypair (Web Push)", status: DRY_RUN ? "dry" : "done", notes: "" });
+}
+
 // ─── PHASE 4: DNS pass 1 (what we know so far) ───────────────────────────────
 
 header(4, "DNS on Vercel — first pass");
@@ -585,15 +615,50 @@ if (step("env", "Write .env.local and push to Vercel")) {
   info(`Written to ${envPath}`);
 
   if (!DRY_RUN) {
-    for (const [k, v] of envVars) {
-      if (v && !v.startsWith("[")) {
-        cmd(`vercel env add ${k} production <<< "${v}"`, { cwd: PROJECT_NAME, note: `Adding ${k}` });
+    const vercelToken = env("VERCEL_TOKEN");
+    if (!vercelToken) {
+      manual("Add VERCEL_TOKEN to .scaffold-secrets to push env vars automatically", [
+        "Get from: vercel.com/account/tokens → Create Token (scope: Full Account)",
+        "Add VERCEL_TOKEN=... to .scaffold-secrets and re-run with --skip spaceship,github,assets,...",
+        "Or push env vars manually in Vercel dashboard → Settings → Environment Variables",
+      ]);
+      note("Env vars written to .env.local only — Vercel push skipped.");
+    } else {
+      // Read project ID from .vercel/project.json (written by `vercel link` in Phase 2)
+      let vercelProjectId = null;
+      let vercelTeamId = null;
+      const vercelProjectFile = join(PROJECT_NAME, ".vercel", "project.json");
+      if (existsSync(vercelProjectFile)) {
+        try {
+          const proj = JSON.parse(readFileSync(vercelProjectFile, "utf8"));
+          vercelProjectId = proj.projectId;
+          vercelTeamId = proj.orgId;
+        } catch {}
+      }
+      if (!vercelProjectId) {
+        manual("Could not read .vercel/project.json — run Phase 2 (vercel link) first, then re-run with --skip ...,env");
       } else {
-        note(`Skipping ${k} — placeholder value, set manually in Vercel dashboard`);
+        const teamParam = vercelTeamId ? `&teamId=${vercelTeamId}` : "";
+        for (const [k, v] of envVars) {
+          if (v && !v.startsWith("[")) {
+            const r = await httpPost(
+              `https://api.vercel.com/v10/projects/${vercelProjectId}/env?upsert=true${teamParam}`,
+              { Authorization: `Bearer ${vercelToken}` },
+              { key: k, value: v, type: "plain", target: ["production"] }
+            );
+            if (r.ok) {
+              info(`Pushed to Vercel: ${k}`);
+            } else {
+              console.error(c(RED, `    ✗ Failed to push ${k}: ${r.status} ${JSON.stringify(r.data)}`));
+            }
+          } else {
+            note(`Skipping ${k} — placeholder value, set manually in Vercel dashboard`);
+          }
+        }
       }
     }
   } else {
-    note("Would write to .env.local and push each var via: vercel env add KEY production");
+    note("Would write to .env.local and push each var via Vercel REST API (POST /v10/projects/{id}/env?upsert=true)");
     note(`Example .env.local written to: ${envPath}`);
   }
 
