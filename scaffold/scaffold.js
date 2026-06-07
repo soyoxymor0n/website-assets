@@ -322,6 +322,7 @@ if (step("r2", "Cloudflare → create R2 bucket")) {
   const bucketName = `${PROJECT_NAME}-storage`;
   cmd(`wrangler r2 bucket create ${bucketName}`, { note: "Requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN in env" });
   collect("R2_BUCKET_NAME", bucketName);
+    collect("R2_ACCOUNT_ID", env("CLOUDFLARE_ACCOUNT_ID") || "[account-id]");
   collect("R2_ENDPOINT", `https://${env("CLOUDFLARE_ACCOUNT_ID") || "[account-id]"}.r2.cloudflarestorage.com`);
   note("Generate R2 API token: dash.cloudflare.com → R2 → Manage R2 API Tokens");
   collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
@@ -720,3 +721,5 @@ const logPath = `scaffold-log-${PROJECT_NAME}-${Date.now()}.json`;
 writeFileSync(logPath, JSON.stringify({ project: PROJECT_NAME, domain: PROJECT_DOMAIN, dryRun: DRY_RUN, timestamp: new Date().toISOString(), results, collectedKeys: Object.keys(collected) }, null, 2));
 console.log(c(GREY, `\n  Run log saved to: ${logPath}`));
 console.log("");
+
+
