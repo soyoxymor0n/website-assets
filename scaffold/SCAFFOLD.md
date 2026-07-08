@@ -48,6 +48,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | GitHub repo | 🟢 Automated | `gh` CLI |
 | website-assets folder | 🟢 Automated | git push |
 | Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
+| Vercel function region | 🟢 Automated | `"regions": ["dub1"]` written into the repo's `vercel.json` — must match the Turso region (aws-eu-west-1); Vercel's default is iad1 (US East) |
 | Turso DB | 🟢 Automated | `turso` CLI |
 | Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Free tier = 1 DB max — if already taken, fetch existing DB via `GET /v2/redis/database/{id}` and reuse |
 | Upstash QStash | 🟡 Partial | `QSTASH_TOKEN` = manual (copy from console.upstash.com/qstash, one-time). Signing keys = automated: `GET https://qstash.upstash.io/v2/keys` with Bearer token → returns `current` + `next` |
@@ -108,7 +109,18 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 3. GitHub (website-assets) → create /{project-name}/ folder, push
 4. Vercel → create project, link repo, set framework
 5. Vercel → add domain + www→non-www 301 redirect
+5b. Vercel → pin function region: `"regions": ["dub1"]` in vercel.json
 ```
+
+**Function region (5b) is mandatory, not cosmetic.** Vercel defaults every
+project's serverless functions to `iad1` (US East) regardless of where the user
+or the database lives. All our Turso DBs are in `aws-eu-west-1` (Dublin), so the
+default makes EVERY DB round trip transatlantic (~90ms each — a cold-start
+bootstrap with dozens of statements takes seconds; found on deepsonda
+2026-07-08). Put `"regions": ["dub1"]` in the repo's `vercel.json` (survives
+project re-creation; Hobby tier includes one region free). If a project's Turso
+DB ever lives elsewhere, match the region to the DB, not the visitors — static
+assets ship from the global CDN either way.
 
 ### PHASE 3 — Backend services (parallel, no interdependencies)
 ```

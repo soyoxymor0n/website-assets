@@ -26,7 +26,9 @@
 
 import { execSync, spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { resolve, join } from "path";
+import { resolve, join, dirname } from "path";
+import { homedir } from "os";
+import { fileURLToPath } from "url";
 import readline from "readline";
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
@@ -74,8 +76,17 @@ Example:
 
 // ─── Secrets / env ───────────────────────────────────────────────────────────
 
-const SECRETS_FILE = ".scaffold-secrets";
-if (existsSync(SECRETS_FILE)) {
+// Resolve secrets independent of cwd so this works when run as a global skill.
+// Order: machine-global (~/.claude/scaffold-secrets) → script-relative
+// (../.scaffold-secrets, the website-assets checkout) → cwd (./.scaffold-secrets).
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const SECRETS_CANDIDATES = [
+  join(homedir(), ".claude", "scaffold-secrets"),
+  resolve(SCRIPT_DIR, "..", ".scaffold-secrets"),
+  resolve(process.cwd(), ".scaffold-secrets"),
+];
+const SECRETS_FILE = SECRETS_CANDIDATES.find((p) => existsSync(p));
+if (SECRETS_FILE) {
   const lines = readFileSync(SECRETS_FILE, "utf8").split("\n");
   for (const line of lines) {
     const [k, ...rest] = line.split("=");
@@ -235,6 +246,20 @@ if (step("vercel", "Vercel → create project & link repo")) {
     cmd(`vercel domains add ${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
     // www → non-www redirect
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
+    // Pin the function region to the Turso region (aws-eu-west-1 → dub1).
+    // Vercel defaults to iad1 (US East), which puts every DB round trip
+    // across the Atlantic (~90ms each — seconds per cold-start bootstrap).
+    const vercelJsonPath = join(PROJECT_NAME, "vercel.json");
+    const vercelCfg = existsSync(vercelJsonPath)
+      ? JSON.parse(readFileSync(vercelJsonPath, "utf8"))
+      : {};
+    if (!vercelCfg.regions) {
+      writeFileSync(
+        vercelJsonPath,
+        JSON.stringify({ regions: ["dub1"], ...vercelCfg }, null, 2) + "\n"
+      );
+      info(`Pinned function region to dub1 in ${vercelJsonPath} (matches Turso aws-eu-west-1)`);
+    }
     manual(
       "Set up www → non-www 301 redirect in Vercel dashboard",
       [
@@ -246,6 +271,7 @@ if (step("vercel", "Vercel → create project & link repo")) {
     cmd(`vercel link`, { note: "Interactive prompt — links repo to Vercel project" });
     cmd(`vercel domains add ${PROJECT_DOMAIN}`);
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`);
+    note(`Would pin function region: "regions": ["dub1"] in vercel.json (matches Turso aws-eu-west-1)`);
   }
   results.push({ id: "vercel", label: "Vercel project + domain", status: DRY_RUN ? "dry" : "done", notes: "" });
 }
