@@ -18,9 +18,14 @@ Step 2 — Infra scaffold  → provisions all services, fills .env.local with re
 - Code scaffold only → adding a new service module to an existing project
 - Infra scaffold only → re-provisioning services, rotating keys, adding a service to an existing codebase
 
-**Invoke code scaffold:** "Scaffold a new [Vite+Express / Next.js / mobile] app called [name]"
+**The code scaffold is the blueprint** (`antigravity-workspaces/blueprint`, since 2026-07-11):
+`node tools/create-app.mjs --slug <name> --name "<Name>" --domain <domain> --description "..." --github`
+generates a complete, tested house-stack app (23 tests green out of the box) and creates/pushes the
+GitHub repo via REST (GITHUB_TOKEN) — so run this infra script with `--skip github`.
+
+**Invoke code scaffold:** the `new-project` skill ("new project [name] — [one sentence]")
 **Invoke infra scaffold:** "Pull up the scaffold skill and spin up [name] on [domain]"
-**Invoke both:** "Full project scaffold for [name] — [one sentence description]"
+**Invoke both:** the `new-project` skill orchestrates code → infra → deploy end to end
 
 > The `.env.example` produced by the code scaffold is the exact template for what this script writes to `.env.local` in Phase 9.
 
@@ -339,6 +344,7 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Added CloudMailin for inbound email (F04 pattern). Account + address = manual; MX record + env var = automated. Secret is generated (not given by CloudMailin). MX target: `mx.cloudmailin.net.` priority 10. Free tier: 10k msg/month. |
 | 2026-05 | Added VAPID keypair generation step (Web Push, F15). Uses `npx web-push generate-vapid-keys --json` — no external service, just local key gen. Produces `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. |
 | 2026-05 | Phase 9 env push fully replaced with Vercel REST API (`POST /v10/projects/{id}/env?upsert=true`). Cross-platform (no bash heredoc). Reads project ID from `.vercel/project.json`. Requires `VERCEL_TOKEN` in `.scaffold-secrets`. |
+| 2026-07 | Phase 0 code scaffold now exists: the blueprint monorepo (`antigravity-workspaces/blueprint`) + `new-project` skill. `create-app.mjs` generates the repo AND creates/pushes GitHub via REST — run scaffold.js with `--skip github`. |
 
 ---
 
