@@ -1,0 +1,13 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <clipPath id="archClip">
+      <path d="M20,88 V45 A30,30 0 0 1 80,45 V88 Z"/>
+    </clipPath>
+  </defs>
+  <path d="M20,88 V45 A30,30 0 0 1 80,45 V88 Z" fill="oklch(36% 0.06 150)" />
+  <g clip-path="url(#archClip)">
+    <circle cx="72" cy="28" r="29" fill="oklch(90% 0.07 80)" opacity="0.15" />
+    <circle cx="72" cy="28" r="23" fill="oklch(90% 0.07 80)" opacity="0.35" />
+    <circle cx="72" cy="28" r="17" fill="oklch(90% 0.07 80)" />
+  </g>
+</svg>
