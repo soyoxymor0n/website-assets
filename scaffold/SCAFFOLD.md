@@ -416,13 +416,22 @@ echo ".scaffold-secrets" >> .gitignore
   deployment of a brand-new project goes to **production regardless of branch** (a beta push
   produced `target: production`). Subsequent pushes respect the branch. Don't panic-patch; do
   make the first push the one you want serving production.
-- **A domain added via API while NS still point elsewhere never got its Vercel zone**
-  (`zone: false`, NS verified hours later, `ns1.vercel-dns.com` answers REFUSED, records API says
-  `invalid_zone`). Detach + account-delete + re-add with delegation live did NOT create it either.
-  **Working fallback:** keep the zone at Spaceship (`PUT /v1/domains/{d}/nameservers
-  { provider: "basic" }`) and set records to Vercel's `recommendedIPv4[0]` + `recommendedCNAME[0]`
-  from `GET /v6/domains/{d}/config` — Spaceship records API: `PUT /v1/dns/records/{d}`
-  `{ force: true, items: [{ type: 'A', name: '@', address, ttl }, { type: 'CNAME', name, cname, ttl }] }`.
+- **Vercel zone creation for an API-added external domain is ASYNC and slow - hours, not
+  minutes.** Symptoms while pending: `zone: false`, `ns1.vercel-dns.com` answers REFUSED (lame
+  delegation, SERVFAIL everywhere), records API says `invalid_zone` - even AFTER `nsVerifiedAt`
+  is set. Detach/re-add and the verify endpoint don't visibly accelerate it. RESOLUTION
+  (hejsmart, 2026-07-17): the zone materialized on its own ~2h after the domain re-add, with no
+  Vercel-dashboard action - so the fix is patience, not surgery. **Don't flip-flop nameservers
+  in that window** (each flip adds propagation churn). Verify readiness by querying
+  `ns1.vercel-dns.com` directly, not through a resolver. A valid stopgap while waiting: host the
+  zone at Spaceship (`PUT /v1/domains/{d}/nameservers { provider: "basic" }`) with Vercel's
+  `recommendedIPv4[0]` + `recommendedCNAME[0]` from `GET /v6/domains/{d}/config` - Spaceship
+  records API: `PUT /v1/dns/records/{d}` `{ force: true, items: [{ type: 'A', name: '@',
+  address, ttl }, { type: 'CNAME', name, cname, ttl }] }` - Vercel serves via `configuredBy: "A"`
+  either way and transitions transparently when the NS move to Vercel later.
+- **`beta.<domain>` 404s until the SECOND beta push.** Because the first deployment of a fresh
+  project targets production (above), no *preview* deployment exists yet for the branch-scoped
+  domain; an empty-commit push to `beta` creates one and the 404 resolves.
 - **`teamId` gotcha confirmed again**: every `/v5/domains*` call 403s without `?teamId=<orgId>`.
 - **turso CLI is not installed on this machine** — use the Platform API instead
   (`TURSO_API_TOKEN` + `TURSO_ORG` are already in scaffold-secrets): create DB under the default
