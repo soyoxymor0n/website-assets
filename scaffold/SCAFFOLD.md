@@ -31,6 +31,14 @@ GitHub repo via REST (GITHUB_TOKEN) — so run this infra script with `--skip gi
 
 ---
 
+## Model choice when running this script
+**Sonnet**, not Haiku — most steps look mechanical but require judgment from
+reading API responses (reuse-vs-create when a free-tier slot is taken, the
+Clerk 404 false-positive trap noted under Known Limitations below). Escalate
+to Opus only for a failure this doc doesn't already document. DNS/domain/
+production actions stay with the main agent regardless of model (see the
+delegation rules in template CLAUDE.md).
+
 ## Quick Start
 
 ```bash
@@ -53,6 +61,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | GitHub repo | 🟢 Automated | `gh` CLI |
 | website-assets folder | 🟢 Automated | git push |
 | Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
+| Vercel production branch | 🟢 Automated (2026-07-15) | `PATCH /v9/projects/{id}` right after `vercel link` — `vercel link`'s own auto-detection isn't trusted (see PHASE 2 note) |
+| Vercel beta branch domain | 🟢 Automated (2026-07-15) | `POST /v10/projects/{id}/domains` with `gitBranch: "beta"` — CLI has no branch-scoping flag |
 | Vercel function region | 🟢 Automated | `"regions": ["dub1"]` written into the repo's `vercel.json` — must match the Turso region (aws-eu-west-1); Vercel's default is iad1 (US East) |
 | Turso DB | 🟢 Automated | `turso` CLI |
 | Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Free tier = 1 DB max — if already taken, fetch existing DB via `GET /v2/redis/database/{id}` and reuse |
@@ -73,16 +83,44 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Microsoft API permissions | 🔴 Always manual | Entra portal: API permissions → Microsoft Graph → Delegated |
 | Microsoft client secret | 🔴 Always manual | Entra portal: Certificates & secrets → New client secret (copy value immediately) |
 | Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
-| Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → returns all 5 CNAME targets; push each to Vercel |
+| Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → `cname_targets[]` (`host`/`value`/`required`) = exactly what the dashboard's "Copy DNS instructions" button emits. Needs the **production** key: an `sk_test_` instance has no custom domain and returns no targets. Verified live 2026-07-15. |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
 | Clerk keys → Vercel | 🟢 Automated | Push pk_live/sk_live to production env; pk_test/sk_test to preview+development |
 | Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
 | Spaceship email forwarding DNS | 🟡 Partial | DNS records (MX + SPF TXT) pushed to Vercel automatically; "Verify DNS changes" button in Spaceship UI = always manual (no API endpoint) |
-| Vercel DNS records | 🟡 Mixed | Automated for Resend + email forwarding MX/SPF; manual for Clerk/Google (2nd pass) |
+| Clerk Google redirect URI | 🔴 Always manual | Not derivable — it is NOT `{frontend_api_url}/v1/oauth_callback` (that path 404s on a healthy prod instance), and no endpoint returns it. Copy from Configure → SSO → Google. |
+| Vercel DNS records | 🟢 Automated | `POST /v2/domains/{domain}/records` for Resend + Clerk + Google verification. Both passes. See the DNS gotchas below. |
+| Vercel www → non-www 301 | 🟢 Automated | `PATCH /v9/projects/{id}/domains/www.{domain}` `{ redirect, redirectStatusCode: 301 }` — `vercel domains add` attaches the domain but cannot set the redirect |
 | Env vars → Vercel + .env.local | 🟢 Automated | REST API — `POST /v10/projects/{id}/env?upsert=true` (replaces `vercel env add` heredocs — was bash-only, broke on Windows) |
 | Production deploy | 🟢 Automated | REST API — `POST /v13/deployments` with `deploymentId` to redeploy |
+
+---
+
+## DNS gotchas (all four verified against live Clerk + Vercel data, 2026-07-15)
+
+Every one of these silently produces a *wrong but plausible* result, so they're
+worth knowing before touching `syncDnsRecords()`.
+
+1. **`teamId` is mandatory when the domain belongs to a team.** Without it the
+   DNS endpoints answer `403 forbidden — "You don't have permission to list the
+   domain record"`, which reads like a bad token and isn't. It comes from
+   `orgId` in `.vercel/project.json`.
+2. **Never split the host on the first dot.** Clerk returns fully-qualified
+   hosts; Vercel wants them relative to the zone. `clk._domainkey.example.com`
+   must become `clk._domainkey`, not `clk` — the naive split collapses both DKIM
+   records to `clk`/`clk2` and quietly breaks Clerk's email deliverability.
+3. **The apex is `""`, not `"@"`.** That's what Vercel's own API returns for
+   apex records.
+4. **Vercel stores CNAME values with a trailing dot** (`frontend-api.clerk.services.`);
+   Clerk and Resend quote them without one. Compare with the dot normalized away
+   or every re-run re-adds all five records as duplicates.
+
+Resend's record shape is its own trap: `type` is the DNS type (MX/TXT/CNAME),
+`record` is the *semantic* label (SPF/DKIM), `name` is already zone-relative, and
+MX rows carry `priority` (→ Vercel's `mxPriority`). There is **no `record_type`
+field** — reading one yields `undefined` and the records vanish silently.
 
 ---
 
@@ -113,8 +151,10 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 2. GitHub → create repo from template, clone
 3. GitHub (website-assets) → create /{project-name}/ folder, push
 4. Vercel → create project, link repo, set framework
+4b. Vercel → PATCH productionBranch=main (don't trust auto-detection)
 5. Vercel → add domain + www→non-www 301 redirect
 5b. Vercel → pin function region: `"regions": ["dub1"]` in vercel.json
+5c. Vercel → add beta.{domain} scoped to the `beta` git branch (stable preview URL)
 ```
 
 **Function region (5b) is mandatory, not cosmetic.** Vercel defaults every
@@ -126,6 +166,32 @@ bootstrap with dozens of statements takes seconds; found on deepsonda
 project re-creation; Hobby tier includes one region free). If a project's Turso
 DB ever lives elsewhere, match the region to the DB, not the visitors — static
 assets ship from the global CDN either way.
+
+**productionBranch (4b) is mandatory, not defensive paranoia.** `vercel link`
+auto-detects the production branch from whatever branches exist on the GitHub
+remote AT LINK TIME. If `main` hasn't been pushed yet — e.g. the repo was
+created manually instead of via `create-app.mjs --github` (which always pushes
+`main` then `beta`) — Vercel silently picks `beta` instead, and every routine
+push to `beta` becomes a PRODUCTION deploy, contradicting this workspace's
+entire beta→preview→manual-promote convention (found on outrightsmart
+2026-07-14: local `main` existed but was never pushed, so Vercel linked with
+only `beta` on the remote and set it as production). `scaffold.js` now sets
+`productionBranch: "main"` via REST right after `vercel link`, every time,
+regardless of what branches exist remotely — don't remove this in favor of
+trusting auto-detection again. If you hit this on an already-misconfigured
+project: fast-forward local `main` to the current `beta` commit, push it, then
+`PATCH https://api.vercel.com/v9/projects/{id}` with `{"productionBranch":
+"main"}` (or Dashboard → Settings → Git → Production Branch).
+
+**beta.{domain} (5c)** gives day-to-day `beta` pushes a stable, memorable
+preview URL instead of a fresh `*.vercel.app` link per deployment — matches
+`vercel-deploy-flow`'s beta→preview convention. Done via `POST
+/v10/projects/{id}/domains` with `gitBranch: "beta"` in the body (the
+dashboard equivalent: Settings → Domains → Add → set "Git Branch" to `beta`).
+The `vercel domains add` CLI command has no branch-scoping flag, so this can't
+be done via CLI — REST or dashboard only. No separate DNS record is needed:
+the domain's NS already points at Vercel (Phase 1), so Vercel provisions
+whatever the zone needs for the subdomain automatically.
 
 ### PHASE 3 — Backend services (parallel, no interdependencies)
 ```
@@ -178,19 +244,23 @@ assets ship from the global CDN either way.
 ```
 9. Clerk → create application (PARTIALLY MANUAL)
          → set production URL: https://{domain}
+         → add the production domain under Configure → Domains  ← required, or
+           cname_targets comes back empty
          → configure Google SSO with CLIENT_ID + CLIENT_SECRET
          → enable email+password
          → set branding (name, logo from website-assets)
-         → production environment setup
-         → collect: CLERK_PUBLISHABLE_KEY + CLERK_SECRET_KEY
-         → collect: Clerk DNS records → (goes to Vercel DNS in phase 7)
-         → collect: Clerk redirect URI → (goes back to Google in phase 8)
+         → paste when prompted: CLERK_PUBLISHABLE_KEY + CLERK_SECRET_KEY
+         → paste when prompted: Clerk redirect URI → (goes back to Google in phase 8)
+         → DNS records: NOT copied by hand. The script calls GET /v1/domains
+           with the sk_live_ key you just pasted and queues cname_targets[]
+           for phase 7.
 ```
 
-### PHASE 7 — DNS second pass (now you have everything)
+### PHASE 7 — DNS second pass (now you have everything) — AUTOMATED
 ```
-10. Vercel DNS → Clerk DNS records (CNAME, TXT)
-              → Google site verification TXT
+10. Vercel DNS ← Clerk cname_targets[]        (fetched in phase 6, pushed here)
+              ← Google site verification TXT  (pasted in phase 5, pushed here)
+    Idempotent: existing records are detected and skipped, so re-running is safe.
 ```
 
 ### PHASE 8 — Close the Google ↔ Clerk loop + Microsoft
@@ -285,7 +355,10 @@ OpenAPI spec: https://openapi.vercel.sh/
 
 Key endpoints used by scaffold.js:
 - Create project: `POST /v9/projects`
+- Set production branch (right after `vercel link`, every time — don't trust
+  auto-detection): `PATCH /v9/projects/{id}` — body: `{ "productionBranch": "main" }`
 - Add domain (+ www→non-www redirect): `POST /v10/projects/{id}/domains` — body: `{ name, redirect, redirectStatusCode: 301 }`
+- Add domain scoped to a git branch (e.g. `beta.{domain}` → the `beta` branch): `POST /v10/projects/{id}/domains` — body: `{ name, gitBranch: "beta" }`
 - Verify domain: `POST /v9/projects/{id}/domains/{domain}/verify`
 - DNS records: `POST /v2/domains/{domain}/records` — types: A, AAAA, CNAME, MX, TXT, NS, ALIAS, CAA, SRV, HTTPS
 - List DNS records: `GET /v5/domains/{domain}/records`
@@ -327,10 +400,42 @@ echo ".scaffold-secrets" >> .gitignore
 - **Upstash Redis**: `POST /v2/redis/database` works — correct fields are `database_name` (not `name`), `platform` (aws/gcp, required), `primary_region`. Free tier = 1 DB max. If the slot is taken, fetch the existing DB via `GET /v2/redis/database/{id}` — `rest_token` and `endpoint` are returned directly, no manual copy needed. Auth: Basic `email:api_key`.
 - **Upstash QStash token**: `QSTASH_TOKEN` must be copied manually from console.upstash.com/qstash (no Management API endpoint). Once you have it, signing keys are automated: `GET https://qstash.upstash.io/v2/keys` with `Authorization: Bearer $QSTASH_TOKEN`.
 - **Vercel CLI**: Dropped from scaffold.js — replaced by REST API (`https://api.vercel.com`). Was bash-only due to heredoc `<<< "value"` in `vercel env add`. REST API is cross-platform and needs only `VERCEL_TOKEN`.
+- **Vercel production branch auto-detection**: `vercel link` picks the production branch from whichever branches exist on the GitHub remote at that moment — it is NOT guaranteed to be `main`. If the repo was created outside `create-app.mjs`'s automated `--github` path (which always pushes `main` then `beta`) and only `beta` got pushed, Vercel sets `beta` as production, and every routine push to `beta` becomes a live production deploy. Fixed 2026-07-15: scaffold.js now `PATCH`es `productionBranch: "main"` right after every `vercel link`, unconditionally. If you're auditing an existing project, verify via `GET /v9/projects/{id}` (field `link.productionBranch` or top-level `productionBranch`, depending on API version) rather than assuming it's correct.
 - **CloudMailin**: Account creation and address target configuration are dashboard-only (cloudmailin.com — no account creation API). Free tier assigns one **shared `@cloudmailin.net` address** per account — custom domains (`*@in.{domain}`) require a paid plan. Two routing strategies: (A) free tier — route by `X-Forwarded-To` header (user's email injected by Gmail/Outlook/Apple Mail when forwarding); (B) paid — per-household token in `To:` address. The shared secret is *generated by you* (not given by CloudMailin) — generate it, push to Vercel, paste into the CloudMailin webhook URL. MX target for custom domain: `mx.cloudmailin.net.` (priority 10). Add `CLOUDMAILIN_ADDRESS` env var for the assigned `@cloudmailin.net` address shown in dashboard.
 - **Cloudflare R2 access keys**: R2 S3-compatible credentials (Access Key ID + Secret) are created via `POST /accounts/{id}/tokens` — NOT `/r2/tokens` (no such route) and NOT `/user/tokens`. Use account-scope (`com.cloudflare.api.account.{id}`) for all four R2 permissions (Storage Read, Storage Write, Bucket Item Read, Bucket Item Write). `R2_ACCESS_KEY_ID` = response `id`; `R2_SECRET_ACCESS_KEY` = SHA-256 hex of response `value`. The `CLOUDFLARE_API_TOKEN` in `.scaffold-secrets` must have "Account API Tokens: Edit" permission to create tokens via API.
 
 ---
+
+## Learnings from the hejsmart run (2026-07-17) — fold into the script when touched next
+
+- **`vercel link` cannot run non-interactively.** REST alternative that works end to end:
+  `POST /v9/projects` with `{ name, framework, gitRepository: { type: 'github', repo } }`, then
+  write `.vercel/project.json` yourself (`{ projectId, orgId: accountId }`).
+- **`PATCH /v9/projects/{id} { productionBranch }` now 400s** ("should NOT have additional
+  property"). The setting read back as `link.productionBranch: "main"` anyway — BUT the FIRST
+  deployment of a brand-new project goes to **production regardless of branch** (a beta push
+  produced `target: production`). Subsequent pushes respect the branch. Don't panic-patch; do
+  make the first push the one you want serving production.
+- **A domain added via API while NS still point elsewhere never got its Vercel zone**
+  (`zone: false`, NS verified hours later, `ns1.vercel-dns.com` answers REFUSED, records API says
+  `invalid_zone`). Detach + account-delete + re-add with delegation live did NOT create it either.
+  **Working fallback:** keep the zone at Spaceship (`PUT /v1/domains/{d}/nameservers
+  { provider: "basic" }`) and set records to Vercel's `recommendedIPv4[0]` + `recommendedCNAME[0]`
+  from `GET /v6/domains/{d}/config` — Spaceship records API: `PUT /v1/dns/records/{d}`
+  `{ force: true, items: [{ type: 'A', name: '@', address, ttl }, { type: 'CNAME', name, cname, ttl }] }`.
+- **`teamId` gotcha confirmed again**: every `/v5/domains*` call 403s without `?teamId=<orgId>`.
+- **turso CLI is not installed on this machine** — use the Platform API instead
+  (`TURSO_API_TOKEN` + `TURSO_ORG` are already in scaffold-secrets): create DB under the default
+  group, `POST .../databases/{db}/auth/tokens` for the token.
+- **`UPSTASH_MANAGEMENT_API_KEY` returns 401 with Bearer auth** — key rotated or the API wants
+  `Basic email:key`. Shared-Redis reuse from a sibling project's `.env` is the workaround (the
+  house ratelimit module namespaces keys per project).
+- **Resend free plan = 1 domain** — adding a second domain 403s ("Your plan includes 1 domain").
+- **Script cwd assumptions are inconsistent**: `vercel`/`turso` steps use `{ cwd: PROJECT_NAME }`
+  (expects the workspaces root) but the assets step uses `../website-assets` (expects a project
+  dir). Run from the workspaces root and expect the assets step to fail; env-var names in
+  `collect()` also drifted from the blueprint template's `.env.example` (DATABASE_URL vs
+  TURSO_DATABASE_URL, UPSTASH_REDIS_URL vs UPSTASH_REDIS_REST_URL).
 
 ## Changelog
 
