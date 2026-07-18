@@ -86,6 +86,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → `cname_targets[]` (`host`/`value`/`required`) = exactly what the dashboard's "Copy DNS instructions" button emits. Needs the **production** key: an `sk_test_` instance has no custom domain and returns no targets. Verified live 2026-07-15. |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
 | Clerk keys → Vercel | 🟢 Automated | Push pk_live/sk_live to production env; pk_test/sk_test to preview+development |
+| Clerk key RECOVERY (lost sk) | 🔴 Always manual | No API can return an instance secret key — the Backend API authenticates WITH it (chicken-and-egg), and `/api_keys` / machine-key secrets are one-time-at-creation only (verified 2026-07-17). Dashboard → Configure → API keys, or Chrome automation. **Prevention (scripted since 2026-07-17): `scaffold.js` auto-mirrors every pasted secret into `.scaffold-secrets` as `NAME_<PROJECT>`** (Clerk pk/sk, redirect URI, Google client id/secret) via `persistSecret()`/`askSecret()` — re-runs offer the stored copy (Enter = reuse, paste = rotate in place). Deleting the Vercel env var is never a lockout again (bit deepsonda prod on 2026-07-17). |
 | Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
@@ -367,7 +368,14 @@ Key endpoints used by scaffold.js:
 - List env vars: `GET /v9/projects/{id}/env`
 - Redeploy: `POST /v13/deployments` with `{ deploymentId: "<existing-id>", name: "<project-name>" }`
 
-### Secrets (in .scaffold-secrets — never commit this file!)
+### Secrets (in `website-assets/.scaffold-secrets` — THE canonical copy, never commit it!)
+> Location decided 2026-07-18: user-owned (survives Claude Code / skill
+> reinstalls), gitignored + untracked in the website-assets repo, template
+> beside it. The scaffold script resolves this well-known path first from any
+> cwd; `~/.claude/scaffold-secrets` is a legacy fallback only — keeping a copy
+> there causes rotation drift (one copy updated, the other silently stale).
+> No cloud/git backup by design — mirror the contents into the password
+> manager whenever a secret is added or rotated; that is the recovery path.
 ```bash
 VERCEL_TOKEN=...                             # vercel.com/account/tokens → Create Token
 SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-manager/ → API key

@@ -77,13 +77,21 @@ Example:
 // ─── Secrets / env ───────────────────────────────────────────────────────────
 
 // Resolve secrets independent of cwd so this works when run as a global skill.
-// Order: machine-global (~/.claude/scaffold-secrets) → script-relative
-// (../.scaffold-secrets, the website-assets checkout) → cwd (./.scaffold-secrets).
+// THE CANONICAL FILE IS `website-assets/.scaffold-secrets` (decided 2026-07-18):
+// user-owned (survives Claude Code / skill reinstalls, unlike ~/.claude),
+// gitignored + untracked in that repo, .example template beside it, and the
+// blueprint's create-app.mjs already resolves the same location. The
+// well-known workspace path is tried FIRST because the skill COPY of this
+// script lives in ~/.claude/skills/scaffold, where the script-relative lookup
+// resolves to a path that never exists - that silent miss once left a project
+// with an unprovisioned OpenRouter key for weeks. ~/.claude/scaffold-secrets
+// is a LEGACY fallback only - do not put a copy there (rotation drift).
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const SECRETS_CANDIDATES = [
-  join(homedir(), ".claude", "scaffold-secrets"),
+  join(homedir(), "antigravity-workspaces", "website-assets", ".scaffold-secrets"),
   resolve(SCRIPT_DIR, "..", ".scaffold-secrets"),
   resolve(process.cwd(), ".scaffold-secrets"),
+  join(homedir(), ".claude", "scaffold-secrets"), // legacy fallback
 ];
 const SECRETS_FILE = SECRETS_CANDIDATES.find((p) => existsSync(p));
 if (SECRETS_FILE) {
@@ -149,13 +157,25 @@ function cmd(command, { cwd, note } = {}) {
   }
 }
 
-async function httpPost(url, headers, body) {
+async function httpRequest(method, url, headers, body) {
   const res = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify(body),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   return { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
+}
+async function httpPost(url, headers, body) {
+  return httpRequest("POST", url, headers, body);
+}
+async function httpGet(url, headers) {
+  return httpRequest("GET", url, headers);
+}
+async function httpPut(url, headers, body) {
+  return httpRequest("PUT", url, headers, body);
+}
+async function httpPatch(url, headers, body) {
+  return httpRequest("PATCH", url, headers, body);
 }
 
 function manual(description, details = []) {
@@ -178,6 +198,197 @@ async function waitForEnter(prompt = "Press Enter when done...") {
   await new Promise((resolve) => rl.question(c(YELLOW, `\n    ⏸  ${prompt} `), () => { rl.close(); resolve(); }));
 }
 
+// Read one value back from the operator. Anything a provider has no API for
+// (Clerk's keys, Google's client secret) has to be pasted exactly once — after
+// which it feeds the automation instead of a "[from dashboard]" placeholder.
+async function ask(question) {
+  if (DRY_RUN) return "";
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) =>
+    rl.question(c(YELLOW, `    ↳ ${question} `), (a) => { rl.close(); resolve(a.trim()); })
+  );
+  return answer;
+}
+
+// ─── Durable per-app secrets ─────────────────────────────────────────────────
+
+// Providers with no management API (Clerk above all) hand out secrets exactly
+// once — the instance sk_live_ is unrecoverable via any endpoint (verified
+// 2026-07-17; see "Clerk key RECOVERY" in SCAFFOLD.md). So every pasted secret
+// is mirrored into .scaffold-secrets as NAME_<PROJECT>: a deleted Vercel env
+// var is never a lockout again, and a re-run / rotation offers the stored copy
+// instead of demanding another dashboard dive.
+const PROJECT_KEY_SUFFIX = PROJECT_NAME.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+const PERSIST_FILE = SECRETS_FILE || resolve(SCRIPT_DIR, "..", ".scaffold-secrets");
+
+function persistSecret(baseName, value) {
+  if (DRY_RUN || !value || value.startsWith("[")) return;
+  const key = `${baseName}_${PROJECT_KEY_SUFFIX}`;
+  let content = existsSync(PERSIST_FILE) ? readFileSync(PERSIST_FILE, "utf8") : "";
+  const line = `${key}=${value}`;
+  const re = new RegExp(`^${key}=.*$`, "m");
+  if (re.test(content)) {
+    if (content.match(re)[0] === line) return; // unchanged — don't rewrite
+    content = content.replace(re, line); // rotation: replace in place
+  } else {
+    if (content && !content.endsWith("\n")) content += "\n";
+    content += `${line}\n`;
+  }
+  writeFileSync(PERSIST_FILE, content);
+  process.env[key] = value;
+  note(`stored ${key} in ${PERSIST_FILE}`);
+}
+
+// Ask for a pasted secret, offering the stored per-project copy as the default
+// (Enter reuses it; pasting a new value overwrites the stored copy = rotation).
+async function askSecret(baseName, question, fallback) {
+  const stored = env(`${baseName}_${PROJECT_KEY_SUFFIX}`);
+  const value =
+    (await ask(
+      stored ? `${question} [Enter = stored ${baseName}_${PROJECT_KEY_SUFFIX}]:` : `${question}:`
+    )) || stored;
+  persistSecret(baseName, value);
+  return value || fallback;
+}
+
+// ─── Vercel context / DNS ────────────────────────────────────────────────────
+
+// projectId + teamId come from .vercel/project.json (written by `vercel link`
+// in Phase 2). teamId is NOT optional when the domain belongs to a team: the
+// DNS endpoints answer 403 "You don't have permission to list the domain
+// record" without it, which reads like a bad token and isn't.
+function vercelCtx() {
+  const token = env("VERCEL_TOKEN");
+  let projectId = null;
+  let teamId = null;
+  const projectFile = join(PROJECT_NAME, ".vercel", "project.json");
+  if (existsSync(projectFile)) {
+    try {
+      const p = JSON.parse(readFileSync(projectFile, "utf8"));
+      projectId = p.projectId;
+      teamId = p.orgId;
+    } catch {}
+  }
+  return { token, projectId, teamId };
+}
+
+// Providers describe record names in two different shapes: Clerk returns a
+// fully-qualified host ("clk._domainkey.example.com"), Resend returns one
+// already relative to the zone ("resend._domainkey"). Vercel wants relative,
+// with the apex as an empty string. Normalize both, and never split on the
+// first dot — that would turn "clk._domainkey.example.com" into "clk".
+function dnsName(host) {
+  if (!host || host === PROJECT_DOMAIN) return "";
+  return host.endsWith(`.${PROJECT_DOMAIN}`)
+    ? host.slice(0, -(PROJECT_DOMAIN.length + 1))
+    : host;
+}
+
+// Vercel stores CNAME values with a trailing dot ("frontend-api.clerk.services.")
+// while Clerk and Resend quote them without one. Compare with the dot ignored or
+// every re-run re-adds every record.
+const sameValue = (a, b) =>
+  String(a ?? "").replace(/\.$/, "") === String(b ?? "").replace(/\.$/, "");
+
+// Records discovered from provider APIs, drained by the two DNS passes.
+const pendingDns = { resend: [], clerk: [], google: [] };
+
+let dnsCache = null;
+async function syncDnsRecords(label, records) {
+  if (!records.length) {
+    note(`No ${label} DNS records to add`);
+    return;
+  }
+  if (DRY_RUN) {
+    for (const r of records) {
+      note(`Would add DNS: ${r.type} ${dnsName(r.host) || "@"} → ${r.value}`);
+    }
+    return;
+  }
+  const { token, teamId } = vercelCtx();
+  if (!token) {
+    manual(
+      `Add the ${label} DNS records by hand (VERCEL_TOKEN not set)`,
+      records.map((r) => `${r.type} ${dnsName(r.host) || "@"} → ${r.value}`)
+    );
+    return;
+  }
+  const teamQ = teamId ? `&teamId=${teamId}` : "";
+  if (!dnsCache) {
+    const cur = await httpGet(
+      `https://api.vercel.com/v4/domains/${PROJECT_DOMAIN}/records?limit=100${teamQ}`,
+      { Authorization: `Bearer ${token}` }
+    );
+    if (!cur.ok) {
+      console.error(c(RED, `    ✗ Could not read existing DNS: ${cur.status} ${JSON.stringify(cur.data)}`));
+      manual(
+        `Add the ${label} DNS records by hand`,
+        records.map((r) => `${r.type} ${dnsName(r.host) || "@"} → ${r.value}`)
+      );
+      return;
+    }
+    dnsCache = cur.data.records || [];
+  }
+  for (const rec of records) {
+    const name = dnsName(rec.host);
+    const already = dnsCache.find(
+      (e) => e.type === rec.type && e.name === name && sameValue(e.value, rec.value)
+    );
+    if (already) {
+      note(`Already present: ${rec.type} ${name || "@"} → ${rec.value}`);
+      continue;
+    }
+    const body = { type: rec.type, name, value: rec.value, ttl: 60 };
+    if (rec.priority != null) body.mxPriority = rec.priority;
+    const r = await httpPost(
+      `https://api.vercel.com/v2/domains/${PROJECT_DOMAIN}/records${teamId ? `?teamId=${teamId}` : ""}`,
+      { Authorization: `Bearer ${token}` },
+      body
+    );
+    if (r.ok) {
+      info(`DNS added: ${rec.type} ${name || "@"} → ${rec.value}`);
+      dnsCache.push({ type: rec.type, name, value: rec.value });
+    } else {
+      console.error(c(RED, `    ✗ DNS ${rec.type} ${name || "@"} failed: ${r.status} ${JSON.stringify(r.data)}`));
+      manual(`Add this record by hand`, [`${rec.type} ${name || "@"} → ${rec.value}`]);
+    }
+  }
+}
+
+// Clerk has no API to create an application, but once one exists every DNS
+// record the dashboard's "Copy DNS instructions" button shows is available
+// from GET /v1/domains — host/value/required per CNAME target.
+async function fetchClerkDns(secretKey) {
+  if (!secretKey || secretKey.startsWith("[")) return [];
+  if (!secretKey.startsWith("sk_live_")) {
+    note("Clerk key is not sk_live_ — development instances have no custom domain, so no CNAME targets. Skipping.");
+    return [];
+  }
+  const r = await httpGet("https://api.clerk.com/v1/domains", {
+    Authorization: `Bearer ${secretKey}`,
+  });
+  if (!r.ok) {
+    console.error(c(RED, `    ✗ Clerk /v1/domains: ${r.status} ${JSON.stringify(r.data)}`));
+    return [];
+  }
+  const domains = r.data.data || [];
+  const d =
+    domains.find((x) => x.name === PROJECT_DOMAIN) || domains.find((x) => !x.is_satellite);
+  if (!d) {
+    manual(`Clerk has no domain matching ${PROJECT_DOMAIN}`, [
+      "dashboard.clerk.com → your app → Configure → Domains → add the production domain",
+      "Then re-run with: --skip <everything-else> to pick the records up",
+    ]);
+    return [];
+  }
+  if (d.frontend_api_url) collect("CLERK_FRONTEND_API_URL", d.frontend_api_url);
+  const targets = d.cname_targets || [];
+  if (!targets.length) note("Clerk returned no cname_targets — is the production domain added yet?");
+  // `required: false` targets are the optional email/DKIM ones; take them too —
+  // they cost nothing and Clerk marks the domain fully verified with them.
+  return targets.map((t) => ({ type: "CNAME", host: t.host, value: t.value }));
+}
+
 // Collected secrets to write out at the end
 const collected = {};
 function collect(key, value) {
@@ -191,16 +402,41 @@ function collect(key, value) {
 header(1, "Domain delegation (start the propagation clock)");
 
 if (step("spaceship", "Spaceship → point NS to Vercel")) {
-  manual(
-    `Log in to Spaceship and update NS records for ${PROJECT_DOMAIN}`,
-    [
-      "Go to: spaceship.com → Domains → " + PROJECT_DOMAIN + " → Nameservers",
-      "Set to Vercel's nameservers: ns1.vercel-dns.com, ns2.vercel-dns.com",
+  const VERCEL_NS = ["ns1.vercel-dns.com", "ns2.vercel-dns.com"];
+  const shipKey = env("SPACESHIP_PUBLISHABLE_KEY") || env("SPACESHIP_API_KEY");
+  const shipSecret = env("SPACESHIP_SECRET_KEY");
+  const manualNs = () => {
+    manual(`Log in to Spaceship and update NS records for ${PROJECT_DOMAIN}`, [
+      `Go to: spaceship.com → Domains → ${PROJECT_DOMAIN} → Nameservers`,
+      `Set to Vercel's nameservers: ${VERCEL_NS.join(", ")}`,
       "Save — propagation starts now, will be done by the time you reach DNS steps",
-    ]
-  );
-  await waitForEnter(`Done updating Spaceship NS for ${PROJECT_DOMAIN}?`);
-  results.push({ id: "spaceship", label: "Spaceship NS", status: "manual-done", notes: "Propagation in progress" });
+    ]);
+  };
+  let status = "manual-done";
+  if (DRY_RUN) {
+    note(`PUT https://spaceship.dev/api/v1/domains/${PROJECT_DOMAIN}/nameservers  { provider: "custom", hosts: [${VERCEL_NS.join(", ")}] }`);
+    status = "dry";
+  } else if (!shipKey || !shipSecret) {
+    manualNs();
+    await waitForEnter(`Done updating Spaceship NS for ${PROJECT_DOMAIN}?`);
+  } else {
+    // Spaceship rate-limits this to 5 requests per domain per 300s — one shot,
+    // then fall back to the dashboard rather than retrying into a lockout.
+    const r = await httpPut(
+      `https://spaceship.dev/api/v1/domains/${PROJECT_DOMAIN}/nameservers`,
+      { "X-Api-Key": shipKey, "X-Api-Secret": shipSecret },
+      { provider: "custom", hosts: VERCEL_NS }
+    );
+    if (r.ok) {
+      info(`Spaceship NS → ${VERCEL_NS.join(", ")} (propagation clock started)`);
+      status = "done";
+    } else {
+      console.error(c(RED, `    ✗ Spaceship API: ${r.status} ${JSON.stringify(r.data)}`));
+      manualNs();
+      await waitForEnter(`Done updating Spaceship NS for ${PROJECT_DOMAIN}?`);
+    }
+  }
+  results.push({ id: "spaceship", label: "Spaceship NS", status, notes: "Propagation in progress" });
 }
 
 // ─── PHASE 2: Repos & project shell ──────────────────────────────────────────
@@ -243,9 +479,74 @@ if (step("vercel", "Vercel → create project & link repo")) {
   note(`Root directory: . (or wherever your app lives)`);
   if (!DRY_RUN) {
     cmd(`vercel link`, { cwd: PROJECT_NAME });
+    // Resolve project id/team once — reused for productionBranch + the beta
+    // branch-domain call below. Both need VERCEL_TOKEN + .vercel/project.json
+    // (written by `vercel link` above).
+    const vercelToken = env("VERCEL_TOKEN");
+    const vercelProjectFile = join(PROJECT_NAME, ".vercel", "project.json");
+    let vercelProject = null;
+    if (vercelToken && existsSync(vercelProjectFile)) {
+      try {
+        vercelProject = JSON.parse(readFileSync(vercelProjectFile, "utf8"));
+      } catch {}
+    }
+    const vercelTeamParam = vercelProject?.orgId ? `?teamId=${vercelProject.orgId}` : "";
+
+    // Vercel auto-detects productionBranch from whatever branches exist on
+    // the remote AT LINK TIME — if `main` hasn't been pushed yet (e.g. the
+    // repo was created manually instead of via create-app.mjs's --github
+    // path, which always pushes both), it silently picks `beta` instead,
+    // turning every day-to-day push into a production deploy. Set it
+    // explicitly rather than trusting auto-detection.
+    if (vercelToken && vercelProject) {
+      const r = await httpRequest(
+        "PATCH",
+        `https://api.vercel.com/v9/projects/${vercelProject.projectId}${vercelTeamParam}`,
+        { Authorization: `Bearer ${vercelToken}` },
+        { productionBranch: "main" }
+      );
+      if (r.ok) {
+        info(`Set productionBranch=main (verify no branch was previously deployed to production unexpectedly)`);
+      } else {
+        console.error(c(RED, `    ✗ Failed to set productionBranch: ${r.status} ${JSON.stringify(r.data)}`));
+        manual("Set the production branch to `main` manually", [
+          `Dashboard → ${PROJECT_NAME} → Settings → Git → Production Branch → main`,
+        ]);
+      }
+    } else {
+      manual("Set the production branch to `main` (VERCEL_TOKEN not available to automate this)", [
+        `Dashboard → ${PROJECT_NAME} → Settings → Git → Production Branch → main`,
+        "Do this BEFORE pushing beta for the first time, or beta's first push deploys to production.",
+      ]);
+    }
     cmd(`vercel domains add ${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
     // www → non-www redirect
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
+    // beta.<domain> scoped to the `beta` git branch — a stable preview URL
+    // for day-to-day work instead of an ephemeral *.vercel.app one. Requires
+    // the domain's NS to already point at Vercel (Phase 1) — no separate DNS
+    // record needed, Vercel manages the zone. `vercel domains add` (CLI) has
+    // no branch-scoping flag, so this one has to go through REST.
+    const betaDomain = `beta.${PROJECT_DOMAIN}`;
+    if (vercelToken && vercelProject) {
+      const r = await httpPost(
+        `https://api.vercel.com/v10/projects/${vercelProject.projectId}/domains${vercelTeamParam}`,
+        { Authorization: `Bearer ${vercelToken}` },
+        { name: betaDomain, gitBranch: "beta" }
+      );
+      if (r.ok) {
+        info(`Added ${betaDomain} → scoped to the beta branch`);
+      } else {
+        console.error(c(RED, `    ✗ Failed to add ${betaDomain}: ${r.status} ${JSON.stringify(r.data)}`));
+        manual(`Add ${betaDomain} scoped to the beta git branch manually`, [
+          `Dashboard → ${PROJECT_NAME} → Settings → Domains → Add → ${betaDomain} → Git Branch: beta`,
+        ]);
+      }
+    } else {
+      manual(`Add ${betaDomain} scoped to the beta git branch (VERCEL_TOKEN not available to automate this)`, [
+        `Dashboard → ${PROJECT_NAME} → Settings → Domains → Add → ${betaDomain} → Git Branch: beta`,
+      ]);
+    }
     // Pin the function region to the Turso region (aws-eu-west-1 → dub1).
     // Vercel defaults to iad1 (US East), which puts every DB round trip
     // across the Atlantic (~90ms each — seconds per cold-start bootstrap).
@@ -260,17 +561,31 @@ if (step("vercel", "Vercel → create project & link repo")) {
       );
       info(`Pinned function region to dub1 in ${vercelJsonPath} (matches Turso aws-eu-west-1)`);
     }
-    manual(
-      "Set up www → non-www 301 redirect in Vercel dashboard",
-      [
-        `Dashboard → ${PROJECT_NAME} → Settings → Domains`,
-        `Set www.${PROJECT_DOMAIN} to redirect (301) to ${PROJECT_DOMAIN}`,
-      ]
-    );
+    // www → non-www 301. `vercel domains add` attaches the domain but can't set
+    // the redirect; only the project-domain PATCH can.
+    if (vercelToken && vercelProject) {
+      const r = await httpPatch(
+        `https://api.vercel.com/v9/projects/${vercelProject.projectId}/domains/www.${PROJECT_DOMAIN}${vercelTeamParam}`,
+        { Authorization: `Bearer ${vercelToken}` },
+        { redirect: PROJECT_DOMAIN, redirectStatusCode: 301 }
+      );
+      if (r.ok) {
+        info(`www.${PROJECT_DOMAIN} → 301 → ${PROJECT_DOMAIN}`);
+      } else {
+        console.error(c(RED, `    ✗ Failed to set www redirect: ${r.status} ${JSON.stringify(r.data)}`));
+        manual("Set up www → non-www 301 redirect in Vercel dashboard", [
+          `Dashboard → ${PROJECT_NAME} → Settings → Domains`,
+          `Set www.${PROJECT_DOMAIN} to redirect (301) to ${PROJECT_DOMAIN}`,
+        ]);
+      }
+    }
   } else {
     cmd(`vercel link`, { note: "Interactive prompt — links repo to Vercel project" });
+    note(`Would PATCH productionBranch=main via REST (don't trust Vercel's auto-detection from whatever branches exist on the remote at link time)`);
     cmd(`vercel domains add ${PROJECT_DOMAIN}`);
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`);
+    note(`Would POST beta.${PROJECT_DOMAIN} with gitBranch: "beta" via REST (stable preview URL for the beta branch; CLI has no branch-scoping flag)`);
+    note(`Would PATCH www.${PROJECT_DOMAIN} → 301 redirect → ${PROJECT_DOMAIN}`);
     note(`Would pin function region: "regions": ["dub1"] in vercel.json (matches Turso aws-eu-west-1)`);
   }
   results.push({ id: "vercel", label: "Vercel project + domain", status: DRY_RUN ? "dry" : "done", notes: "" });
@@ -362,7 +677,7 @@ if (step("resend", "Resend → add domain & create API key")) {
     note(`POST https://api.resend.com/domains  { name: "${PROJECT_DOMAIN}" }`);
     note(`POST https://api.resend.com/api-keys  { name: "${PROJECT_NAME}", permission: "sending_access", domain_id: "..." }`);
     collect("RESEND_API_KEY", "[resend-api-key]");
-    note("DNS records for Resend verification will be returned — add to Vercel DNS in Phase 4");
+    note("Verification records come back on that response → queued and written to Vercel DNS in Phase 4");
   } else {
     const key = env("RESEND_API_KEY");
     if (!key) {
@@ -376,10 +691,18 @@ if (step("resend", "Resend → add domain & create API key")) {
       if (domainRes.ok) {
         const domainId = domainRes.data.id;
         info(`Domain added: ${domainRes.data.name}`);
-        note("DNS records to add to Vercel:");
-        for (const r of (domainRes.data.records || [])) {
-          console.log(c(YELLOW, `      ${r.record_type} ${r.name} → ${r.value}`));
-          collected[`RESEND_DNS_${r.record_type}_${r.name}`] = r.value;
+        note("DNS records queued for Vercel (added in Phase 4):");
+        // Resend's shape: `type` is the DNS type (MX/TXT/CNAME), `record` is the
+        // semantic label (SPF/DKIM), `name` is already relative to the zone, and
+        // MX rows carry `priority`. There is no `record_type` field.
+        for (const rec of (domainRes.data.records || [])) {
+          console.log(c(YELLOW, `      ${rec.type} ${rec.name} → ${rec.value}`));
+          pendingDns.resend.push({
+            type: rec.type,
+            host: rec.name,
+            value: rec.value,
+            priority: rec.priority,
+          });
         }
         const keyRes = await httpPost(
           "https://api.resend.com/api-keys",
@@ -474,17 +797,15 @@ if (step("vapid", "Generate VAPID keypair for Web Push notifications")) {
 header(4, "DNS on Vercel — first pass");
 
 if (step("dns-pass1", "Vercel DNS → add Resend + email forwarding records")) {
-  manual(
-    "Add these DNS records in Vercel dashboard",
-    [
-      `Dashboard → ${PROJECT_NAME} → Settings → Domains → ${PROJECT_DOMAIN} → DNS Records`,
-      "Add all Resend DNS records collected above (MX, TXT, CNAME for DKIM)",
-      "Add any email forwarding records from Spaceship if applicable",
-      "⏳ Clerk and Google records come in Phase 7 after those services are set up",
-    ]
-  );
-  await waitForEnter("First-pass DNS records added?");
-  results.push({ id: "dns-pass1", label: "DNS pass 1 (Resend + email)", status: "manual", notes: "" });
+  await syncDnsRecords("Resend", pendingDns.resend);
+  note("⏳ Clerk and Google records come in Phase 7, once those services exist");
+  note("If you use Spaceship email forwarding, add its MX records manually — Resend's API doesn't know about them");
+  results.push({
+    id: "dns-pass1",
+    label: "DNS pass 1 (Resend)",
+    status: DRY_RUN ? "dry" : "done",
+    notes: `${pendingDns.resend.length} record(s)`,
+  });
 }
 
 // ─── PHASE 5: Google Cloud ───────────────────────────────────────────────────
@@ -525,18 +846,30 @@ if (step("google", "Google Cloud → project + OAuth client")) {
   );
   await waitForEnter("Have you copied the Google CLIENT_ID and CLIENT_SECRET?");
 
+  collect(
+    "GOOGLE_CLIENT_ID",
+    await askSecret("GOOGLE_CLIENT_ID", "Paste GOOGLE_CLIENT_ID", "[from Google Cloud console]")
+  );
+  collect(
+    "GOOGLE_CLIENT_SECRET",
+    await askSecret("GOOGLE_CLIENT_SECRET", "Paste GOOGLE_CLIENT_SECRET", "[from Google Cloud console]")
+  );
+
   manual(
     "Get Google site verification TXT record",
     [
       "Go to: search.google.com/search-console → Add property → Domain",
       `Enter: ${PROJECT_DOMAIN}`,
-      "Copy the TXT record value → add to Vercel DNS in Phase 7",
+      "Copy the TXT value — paste it below and Phase 7 writes it to DNS for you",
     ]
   );
-
-  collect("GOOGLE_CLIENT_ID", "[from Google Cloud console]");
-  collect("GOOGLE_CLIENT_SECRET", "[from Google Cloud console]");
-  collect("GOOGLE_VERIFICATION_TXT", "[from Search Console]");
+  const gVerify = await ask("Paste the google-site-verification=… TXT value (Enter to skip):");
+  if (gVerify) {
+    collect("GOOGLE_VERIFICATION_TXT", gVerify);
+    pendingDns.google.push({ type: "TXT", host: PROJECT_DOMAIN, value: gVerify });
+  } else {
+    collect("GOOGLE_VERIFICATION_TXT", "[from Search Console]");
+  }
   collect("NEXT_PUBLIC_GOOGLE_PROJECT_ID", gcpProject);
 
   results.push({ id: "google", label: "Google Cloud OAuth", status: "partial-manual", notes: gcpProject });
@@ -548,25 +881,58 @@ header(6, "Clerk — needs Google client ID from Phase 5");
 
 if (step("clerk", "Clerk → create application & configure")) {
   manual(
-    "Create Clerk application (Platform API exists but branding/social config still needs dashboard)",
+    "Create Clerk application (no public API creates one — dashboard only)",
     [
       "Go to: dashboard.clerk.com → Create application",
       `Name: ${PROJECT_NAME}`,
       "Enable: Email+Password + Google (use CLIENT_ID and CLIENT_SECRET from Phase 5)",
       `Production URL: https://${PROJECT_DOMAIN}`,
       "Set branding: application name, logo (upload from website-assets)",
-      "Go to: Configure → Domains → copy all DNS records",
+      `Go to: Configure → Domains → add ${PROJECT_DOMAIN}`,
+      "  (you do NOT need to copy the DNS records — we pull them from the API below)",
       "Go to: Configure → SSO → Google → copy the Authorized redirect URI",
     ]
   );
-  await waitForEnter("Clerk app created and details copied?");
+  await waitForEnter("Clerk app created, domain added, Google SSO configured?");
 
-  collect("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "[from Clerk dashboard]");
-  collect("CLERK_SECRET_KEY", "[from Clerk dashboard]");
-  collect("CLERK_REDIRECT_URI", "[from Clerk SSO config — needed for Google]");
-  collect("CLERK_DNS_RECORDS", "[multiple records — see Clerk dashboard → Domains]");
+  collect(
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    await askSecret(
+      "CLERK_PUBLISHABLE_KEY",
+      "Paste the Clerk publishable key (pk_live_…)",
+      "[from Clerk dashboard]"
+    )
+  );
+  const clerkSecret = await askSecret("CLERK_SECRET_KEY", "Paste the Clerk secret key (sk_live_…)", "");
+  collect("CLERK_SECRET_KEY", clerkSecret || "[from Clerk dashboard]");
+  // Not derivable: the Google callback is NOT ${frontend_api_url}/v1/oauth_callback
+  // (that path 404s on a healthy production instance), and Clerk exposes no
+  // endpoint for it. Copying it from the dashboard is the only reliable route.
+  collect(
+    "CLERK_REDIRECT_URI",
+    await askSecret(
+      "CLERK_REDIRECT_URI",
+      "Paste the Clerk → SSO → Google Authorized redirect URI",
+      "[from Clerk SSO config — needed for Google]"
+    )
+  );
 
-  results.push({ id: "clerk", label: "Clerk application", status: "manual", notes: "" });
+  if (DRY_RUN) {
+    note("GET https://api.clerk.com/v1/domains  (Bearer sk_live_…) → cname_targets[] → queued for Phase 7");
+  } else {
+    pendingDns.clerk = await fetchClerkDns(clerkSecret);
+    if (pendingDns.clerk.length) {
+      info(`Clerk returned ${pendingDns.clerk.length} CNAME target(s) — queued for Phase 7`);
+      for (const r of pendingDns.clerk) note(`  ${r.type} ${dnsName(r.host) || "@"} → ${r.value}`);
+    }
+  }
+
+  results.push({
+    id: "clerk",
+    label: "Clerk application",
+    status: "partial-manual",
+    notes: `${pendingDns.clerk.length} DNS record(s) via API`,
+  });
 }
 
 // ─── PHASE 7: DNS pass 2 ─────────────────────────────────────────────────────
@@ -574,16 +940,15 @@ if (step("clerk", "Clerk → create application & configure")) {
 header(7, "DNS on Vercel — second pass (now you have everything)");
 
 if (step("dns-pass2", "Vercel DNS → add Clerk + Google records")) {
-  manual(
-    "Add remaining DNS records to Vercel",
-    [
-      `Dashboard → ${PROJECT_NAME} → Settings → Domains → ${PROJECT_DOMAIN}`,
-      "Add all Clerk DNS records (CNAME, TXT)",
-      "Add Google site verification TXT record",
-    ]
-  );
-  await waitForEnter("Second-pass DNS records added?");
-  results.push({ id: "dns-pass2", label: "DNS pass 2 (Clerk + Google)", status: "manual", notes: "" });
+  await syncDnsRecords("Clerk", pendingDns.clerk);
+  await syncDnsRecords("Google verification", pendingDns.google);
+  const total = pendingDns.clerk.length + pendingDns.google.length;
+  results.push({
+    id: "dns-pass2",
+    label: "DNS pass 2 (Clerk + Google)",
+    status: DRY_RUN ? "dry" : "done",
+    notes: `${total} record(s)`,
+  });
 }
 
 // ─── PHASE 8: Close Google ↔ Clerk loop ──────────────────────────────────────
@@ -718,23 +1083,32 @@ for (const r of results) {
   console.log(`  ${icon}  ${r.label}${r.notes ? c(GREY, "  (" + r.notes + ")") : ""}`);
 }
 
-console.log(`\n${c(BOLD, "  Manual checklist (always):")}`);
+// Only things with no API path belong here. Anything the script now does
+// itself (Spaceship NS, all DNS, the www redirect) is deliberately absent —
+// a checklist that lists automated work trains you to ignore the checklist.
+console.log(`\n${c(BOLD, "  Manual checklist — no API exists for these:")}`);
 const manualItems = [
-  `☐ Spaceship: NS pointed to Vercel → ns1.vercel-dns.com, ns2.vercel-dns.com`,
-  `☐ Vercel: www.${PROJECT_DOMAIN} → 301 redirect to ${PROJECT_DOMAIN}`,
-  `☐ Vercel: DNS records for Resend (MX, DKIM, SPF)`,
-  `☐ Vercel: DNS records for Clerk`,
-  `☐ Vercel: Google site verification TXT`,
+  `☐ Clerk: Application created + production domain added (dashboard only)`,
+  `☐ Clerk: Google SSO custom credentials pasted (PATCH .../oauth_google 404s — dashboard only)`,
+  `☐ Clerk: Branding — application name + logo`,
   `☐ Google Cloud: OAuth consent screen configured`,
-  `☐ Google Cloud: OAuth client → redirect URI updated with Clerk URI`,
-  `☐ Google Cloud: Submit for branding verification (optional, starts the clock)`,
-  `☐ Clerk: Application created, Google SSO wired, branding set`,
+  `☐ Google Cloud: OAuth client → redirect URI updated with the Clerk URI`,
+  `☐ Google Cloud: Submit for branding verification (optional, starts a weeks-long clock)`,
   `☐ Pollinations: API key created at enter.pollinations.ai`,
-  `☐ Vercel: Placeholder env vars filled in manually`,
   `☐ website-assets/${PROJECT_NAME}/: Add logo.png, favicon.ico, og-image.png`,
 ];
 for (const item of manualItems) {
   console.log(c(YELLOW, `  ${item}`));
+}
+
+// In a dry run every value is a placeholder by construction, so this would be
+// noise. Only worth printing after a real run, where it's the true remainder.
+const placeholders = DRY_RUN
+  ? []
+  : Object.entries(collected).filter(([, v]) => String(v).startsWith("["));
+if (placeholders.length) {
+  console.log(`\n${c(BOLD, "  Env vars still holding placeholders — set these by hand:")}`);
+  for (const [k] of placeholders) console.log(c(YELLOW, `  ☐ ${k}`));
 }
 
 if (DRY_RUN) {
