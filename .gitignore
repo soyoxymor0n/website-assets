@@ -1,5 +1,5 @@
 .env*
 !.env.example
-.scaffold-secrets
+.scaffold-secrets*
 !.scaffold-secrets.example
 scaffold/scaffold-log-*.json

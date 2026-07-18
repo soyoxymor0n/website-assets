@@ -25,8 +25,11 @@ Run from any project — secrets are resolved machine-globally, not from cwd.
    `../.scaffold-secrets` (script-relative) → `./.scaffold-secrets` (cwd) →
    `~/.claude/scaffold-secrets` (legacy fallback - never put a copy there,
    rotation drift). Refer to keys by name only — never echo their values.
-   NOT in any cloud/git backup by design: keep a copy of the file's contents
-   in the password manager as the recovery path when rotating secrets.
+   NOT in any cloud/git backup by design: the recovery path is a Bitwarden
+   secure note, kept fresh with `node scaffold/secrets-sync.mjs push` after
+   every rotation (`status` to compare, `pull` to restore on a new machine).
+   The script needs an unlocked `BW_SESSION` in the shell - it never prompts
+   for credentials and never prints secret values.
 
 This skill is the single source of truth in `website-assets/scaffold` and is
 exposed globally via a junction in `~/.claude/skills/scaffold`; a `git pull` in

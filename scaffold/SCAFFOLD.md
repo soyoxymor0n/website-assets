@@ -374,8 +374,10 @@ Key endpoints used by scaffold.js:
 > beside it. The scaffold script resolves this well-known path first from any
 > cwd; `~/.claude/scaffold-secrets` is a legacy fallback only — keeping a copy
 > there causes rotation drift (one copy updated, the other silently stale).
-> No cloud/git backup by design — mirror the contents into the password
-> manager whenever a secret is added or rotated; that is the recovery path.
+> No cloud/git backup by design — the recovery path is a Bitwarden secure
+> note named `scaffold-secrets`, synced with `node scaffold/secrets-sync.mjs
+> push|pull|status` (whole file as the note body; needs an unlocked
+> BW_SESSION; prints hashes, never values). Push after EVERY rotation.
 ```bash
 VERCEL_TOKEN=...                             # vercel.com/account/tokens → Create Token
 SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-manager/ → API key
