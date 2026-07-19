@@ -85,12 +85,12 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
 | Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → `cname_targets[]` (`host`/`value`/`required`) = exactly what the dashboard's "Copy DNS instructions" button emits. Needs the **production** key: an `sk_test_` instance has no custom domain and returns no targets. Verified live 2026-07-15. |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
-| Clerk keys → Vercel | 🟢 Automated | Push pk_live/sk_live to production env; pk_test/sk_test to preview+development |
+| Clerk keys → Vercel | 🟡 Partial (doc was aspirational — corrected 2026-07-19) | Phase 6 collects ONLY the prod instance (pk_live/sk_live) and Phase 9 pushes EVERY var to `target:["production"]` ONLY (scaffold.js ~L1039). So the dev-instance keys (pk_test/sk_test), the preview+development scopes, and the `VITE_` publishable mirror are NOT automated — set per-scope by hand via REST upsert (below). **Never `vercel env add`**: its stdin path prints `✓ Added` but stores an EMPTY value on Windows PowerShell (bit hejsmart 2026-07-19). Verify every write with `vercel env pull <f> --environment=<production\|preview\|development>`. Active CLI token: `%APPDATA%\xdg.data\com.vercel.cli\auth.json` (`.token`); the `\com.vercel.cli\Data\` copy is stale → 403. Scope map: dev `pk_test/sk_test` → preview+development, prod `pk_live/sk_live` → production, unsuffixed names (`VITE_CLERK_PUBLISHABLE_KEY`+`CLERK_PUBLISHABLE_KEY`+`CLERK_SECRET_KEY`). **TODO: make Phase 9 `_PROD`-aware (see Known Limitations).** |
 | Clerk key RECOVERY (lost sk) | 🔴 Always manual | No API can return an instance secret key — the Backend API authenticates WITH it (chicken-and-egg), and `/api_keys` / machine-key secrets are one-time-at-creation only (verified 2026-07-17). Dashboard → Configure → API keys, or Chrome automation. **Prevention (scripted since 2026-07-17): `scaffold.js` auto-mirrors every pasted secret into `.scaffold-secrets` as `NAME_<PROJECT>`** (Clerk pk/sk, redirect URI, Google client id/secret) via `persistSecret()`/`askSecret()` — re-runs offer the stored copy (Enter = reuse, paste = rotate in place). Deleting the Vercel env var is never a lockout again (bit deepsonda prod on 2026-07-17). |
 | Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
-| Spaceship email forwarding DNS | 🟡 Partial | DNS records (MX + SPF TXT) pushed to Vercel automatically; "Verify DNS changes" button in Spaceship UI = always manual (no API endpoint) |
+| Spaceship email forwarding DNS | 🟢 Automated (records) | The 3 "Email Forwarding Free" records — 2× MX → `mx1`/`mx2.efwd.spaceship.net` (pref 0) + apex SPF TXT `v=spf1 include:spf.efwd.spaceship.net ~all` — are pushed to Vercel DNS by the dedicated `email-forwarding` step. The VALUES are constant across every domain; only the host varies (always the project apex). Enabling the forwards AND Spaceship's "Verify DNS changes" button have **no public API** — the whole `docs.spaceship.dev` surface is domains/DNS/nameservers/contacts only (confirmed 2026-07-19) → Chrome/dashboard only. Apex SPF assumes Resend sends from the `send.` subdomain (it does); if a project ever sends AS the bare apex, merge the two `v=spf1` includes into one record. |
 | Clerk Google redirect URI | 🔴 Always manual | Not derivable — it is NOT `{frontend_api_url}/v1/oauth_callback` (that path 404s on a healthy prod instance), and no endpoint returns it. Copy from Configure → SSO → Google. |
 | Vercel DNS records | 🟢 Automated | `POST /v2/domains/{domain}/records` for Resend + Clerk + Google verification. Both passes. See the DNS gotchas below. |
 | Vercel www → non-www 301 | 🟢 Automated | `PATCH /v9/projects/{id}/domains/www.{domain}` `{ redirect, redirectStatusCode: 301 }` — `vercel domains add` attaches the domain but cannot set the redirect |
@@ -211,8 +211,12 @@ whatever the zone needs for the subdomain automatically.
 
 ### PHASE 4 — DNS first pass (with what you have so far)
 ```
-7. Vercel DNS → Resend MX/TXT/CNAME records
-              → Spaceship email forwarding records
+7. Vercel DNS → Resend MX/TXT/CNAME records                      (step: dns-pass1)
+              → Spaceship email-forwarding records:              (step: email-forwarding)
+                  2× MX @ → mx1/mx2.efwd.spaceship.net (pref 0)
+                  TXT  @ → v=spf1 include:spf.efwd.spaceship.net ~all
+                  (constant values; then enable forwards + click "Verify DNS changes"
+                   in Spaceship by hand — no API for those two)
               → CloudMailin MX record for in.{domain}:
                   POST /v2/domains/{domain}/records
                   { name: "in", type: "MX", value: "mx.cloudmailin.net.", mxPriority: 10 }

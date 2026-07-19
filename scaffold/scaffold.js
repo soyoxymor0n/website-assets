@@ -796,15 +796,45 @@ if (step("vapid", "Generate VAPID keypair for Web Push notifications")) {
 
 header(4, "DNS on Vercel — first pass");
 
-if (step("dns-pass1", "Vercel DNS → add Resend + email forwarding records")) {
+// Spaceship "Email Forwarding Free" — the record VALUES are identical for every
+// domain (the efwd MTA hosts and the SPF include are constant); the only
+// per-project variable is the host, which is always the project's own apex.
+// They go to Vercel DNS because the zone's nameservers are delegated there
+// (Phase 1). Enabling the forwards and clicking Spaceship's "Verify DNS changes"
+// button have NO public API (confirmed against docs.spaceship.dev, 2026-07-19) —
+// those two stay manual / Chrome-driven.
+// APEX SPF ASSUMPTION: Resend sends from the `send.` subdomain, so the apex SPF
+// is free for the forwarder. If a project ever sends AS the bare apex, merge the
+// two `v=spf1` includes into ONE apex TXT record by hand (two apex SPF = invalid).
+const EMAIL_FORWARDING_RECORDS = [
+  { type: "MX", host: PROJECT_DOMAIN, value: "mx1.efwd.spaceship.net", priority: 0 },
+  { type: "MX", host: PROJECT_DOMAIN, value: "mx2.efwd.spaceship.net", priority: 0 },
+  { type: "TXT", host: PROJECT_DOMAIN, value: "v=spf1 include:spf.efwd.spaceship.net ~all" },
+];
+
+if (step("dns-pass1", "Vercel DNS → add Resend records")) {
   await syncDnsRecords("Resend", pendingDns.resend);
   note("⏳ Clerk and Google records come in Phase 7, once those services exist");
-  note("If you use Spaceship email forwarding, add its MX records manually — Resend's API doesn't know about them");
   results.push({
     id: "dns-pass1",
     label: "DNS pass 1 (Resend)",
     status: DRY_RUN ? "dry" : "done",
     notes: `${pendingDns.resend.length} record(s)`,
+  });
+}
+
+if (step("email-forwarding", "Vercel DNS → Spaceship email-forwarding records (MX + SPF)")) {
+  await syncDnsRecords("Spaceship email forwarding", EMAIL_FORWARDING_RECORDS);
+  // The DNS is now in place; the remaining two steps have no Spaceship API.
+  manual("Finish Spaceship email forwarding (no public API for these two)", [
+    `Spaceship → ${PROJECT_DOMAIN} → Email forwarding: enable it and add each address (e.g. hello@ → your inbox)`,
+    "Then click 'Verify DNS changes' — the MX + SPF records above are already on Vercel DNS",
+  ]);
+  results.push({
+    id: "email-forwarding",
+    label: "Email forwarding DNS (Spaceship efwd)",
+    status: DRY_RUN ? "dry" : "done",
+    notes: `${EMAIL_FORWARDING_RECORDS.length} records; enable + verify manual`,
   });
 }
 
