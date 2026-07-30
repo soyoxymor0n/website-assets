@@ -10,9 +10,9 @@
  * Prerequisites (install once):
  *   npm install -g vercel
  *   npm install -g @turso/cli   (or: brew install tursodatabase/tap/turso)
- *   npm install -g wrangler
  *   gh auth login
  *   gcloud auth login
+ *   (R2 bucket + S3 credentials go through the Cloudflare REST API now — no wrangler needed)
  *
  * Secrets needed in your environment (or .scaffold-secrets file):
  *   OPENROUTER_PROVISIONING_KEY   — from openrouter.ai/settings/keys (create one "Provisioning" key)
@@ -29,6 +29,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { resolve, join, dirname } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 import readline from "readline";
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
@@ -659,16 +660,103 @@ if (step("upstash-qstash", "Upstash → get QStash token")) {
 }
 
 // Cloudflare R2
-if (step("r2", "Cloudflare → create R2 bucket")) {
+if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
   const bucketName = `${PROJECT_NAME}-storage`;
-  cmd(`wrangler r2 bucket create ${bucketName}`, { note: "Requires CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN in env" });
+  const accountId = env("CLOUDFLARE_ACCOUNT_ID");
+  const apiToken = env("CLOUDFLARE_API_TOKEN");
+  // EU by default: matches the house posture (Turso EU, Vercel dub1) and the
+  // prevailing pattern on this account (buildfolio, newspills, styleops,
+  // toyfans are all `eu`). The bucket is created under the `eu` jurisdiction
+  // (cf-r2-jurisdiction header below), which is why the endpoint needs the
+  // `.eu.` infix — the default (non-jurisdiction) endpoint 404s on it.
   collect("R2_BUCKET_NAME", bucketName);
-    collect("R2_ACCOUNT_ID", env("CLOUDFLARE_ACCOUNT_ID") || "[account-id]");
-  collect("R2_ENDPOINT", `https://${env("CLOUDFLARE_ACCOUNT_ID") || "[account-id]"}.r2.cloudflarestorage.com`);
-  note("Generate R2 API token: dash.cloudflare.com → R2 → Manage R2 API Tokens");
-  collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
-  collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
-  results.push({ id: "r2", label: "Cloudflare R2 bucket", status: DRY_RUN ? "dry" : "done", notes: bucketName });
+  collect("R2_ACCOUNT_ID", accountId || "[account-id]");
+  collect("R2_ENDPOINT", `https://${accountId || "[account-id]"}.eu.r2.cloudflarestorage.com`);
+  // A public bucket domain is a URL nobody can revoke — anything user-owned
+  // should be read through an authorized app route instead of a raw R2 public
+  // URL. Leave this empty; a project that genuinely wants public assets can
+  // set it deliberately.
+  note("R2_PUBLIC_DOMAIN left blank on purpose — serve user-owned files through an authorized app route, not a public bucket URL");
+  collect("R2_PUBLIC_DOMAIN", "");
+
+  if (DRY_RUN) {
+    note(`GET https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  (cf-r2-jurisdiction: eu) — reuse if "${bucketName}" already exists`);
+    note(`POST https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  { name: "${bucketName}", locationHint: "weur", storageClass: "Standard" }  (cf-r2-jurisdiction: eu)`);
+    note(`POST https://api.cloudflare.com/client/v4/accounts/{id}/tokens  (scoped R2 S3 API credentials — NOT /r2/tokens, NOT /user/tokens)`);
+    collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
+    collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
+  } else if (!accountId || !apiToken) {
+    manual("Set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN in .scaffold-secrets", [
+      "Account id: dash.cloudflare.com → right sidebar",
+      'API token: dash.cloudflare.com/profile/api-tokens — needs "Account API Tokens: Edit" to create R2 tokens via API',
+    ]);
+    collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
+    collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
+  } else {
+    const cfHeaders = { Authorization: `Bearer ${apiToken}`, "cf-r2-jurisdiction": "eu" };
+
+    // Idempotent: list first (same jurisdiction header) and reuse a same-named
+    // bucket rather than erroring, matching how the other steps in this file
+    // report reuse.
+    const listed = await httpGet(`https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`, cfHeaders);
+    const already = listed.ok && (listed.data.result?.buckets || []).find((b) => b.name === bucketName);
+    if (already) {
+      info(`R2 bucket already exists, reusing: ${bucketName}`);
+    } else {
+      const created = await httpPost(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
+        cfHeaders,
+        { name: bucketName, locationHint: "weur", storageClass: "Standard" }
+      );
+      if (created.ok) {
+        info(`R2 bucket created: ${bucketName}`);
+      } else {
+        console.error(c(RED, `    ✗ R2 bucket create failed: ${created.status} ${JSON.stringify(created.data)}`));
+      }
+    }
+
+    // S3-compatible credentials go through the general account Tokens API —
+    // NOT /r2/tokens (no such route) and NOT /user/tokens. The four
+    // permission-group ids below were fetched live from
+    // GET /accounts/{id}/tokens/permission_groups on this account on
+    // 2026-07-30 — re-fetch that endpoint if Cloudflare ever rotates them.
+    const tokenRes = await httpPost(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens`,
+      { Authorization: `Bearer ${apiToken}` },
+      {
+        name: `${PROJECT_NAME}-r2`,
+        policies: [
+          {
+            effect: "allow",
+            permission_groups: [
+              { id: "b4992e1108244f5d8bfbd5744320c2e1" }, // Workers R2 Storage Read
+              { id: "bf7481a1826f439697cb59a20b22293e" }, // Workers R2 Storage Write
+              { id: "6a018a9f2fc74eb6b293b0c548f38b39" }, // Workers R2 Storage Bucket Item Read
+              { id: "2efd5506f9c8494dacb1fa10a3e7d5b6" }, // Workers R2 Storage Bucket Item Write
+            ],
+            resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
+          },
+        ],
+      }
+    );
+    if (tokenRes.ok) {
+      info(`R2 S3 API credentials created: ${tokenRes.data.result?.name || `${PROJECT_NAME}-r2`}`);
+      collect("R2_ACCESS_KEY_ID", tokenRes.data.result?.id || "[r2-access-key]");
+      // Cloudflare-specific derivation, not a generic one: R2's S3 secret key
+      // is the SHA-256 hex digest of the token's `value` — NOT the raw value
+      // itself. Looks like a bug if you don't know this; it isn't.
+      const rawValue = tokenRes.data.result?.value;
+      collect(
+        "R2_SECRET_ACCESS_KEY",
+        rawValue ? createHash("sha256").update(rawValue).digest("hex") : "[r2-secret]"
+      );
+    } else {
+      console.error(c(RED, `    ✗ R2 token create failed: ${tokenRes.status} ${JSON.stringify(tokenRes.data)}`));
+      collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
+      collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
+    }
+  }
+  results.push({ id: "r2", label: "Cloudflare R2 bucket + credentials", status: DRY_RUN ? "dry" : "done", notes: bucketName });
 }
 
 // Resend
