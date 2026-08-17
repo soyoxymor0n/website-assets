@@ -11,6 +11,14 @@ description: >-
 
 Run from any project — secrets are resolved machine-globally, not from cwd.
 
+**Two data stores per project, always.** Turso and R2 are each provisioned
+twice — `{name}-db` + `{name}-db-beta`, `{name}-storage` + `{name}-storage-beta`
+— and Phase 9 pushes `_PROD`-suffixed values to Vercel's Production scope and
+their unsuffixed twins to Preview + Development. A preview must never touch
+production data; a blueprint-based app refuses to start when the pairing is
+wrong. Read the `env-isolation` skill before changing anything about which
+store a deployment gets.
+
 1. Read `./SCAFFOLD.md` for the full provisioning sequence and flags.
 2. Always **dry-run first**, then commit:
    ```bash

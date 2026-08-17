@@ -596,15 +596,97 @@ if (step("vercel", "Vercel → create project & link repo")) {
 
 header(3, "Provision backend services");
 
-// Turso
-if (step("turso", "Turso → create database")) {
-  const dbName = `${PROJECT_NAME}-db`;
-  const out = cmd(`turso db create ${dbName} --wait`);
-  const urlOut = cmd(`turso db show ${dbName} --url`);
-  const tokenOut = cmd(`turso db tokens create ${dbName}`);
-  collect("DATABASE_URL", urlOut || `libsql://${dbName}-yourorg.turso.io`);
-  collect("DATABASE_AUTH_TOKEN", tokenOut || "[turso-token]");
-  results.push({ id: "turso", label: "Turso DB", status: DRY_RUN ? "dry" : "done", notes: `db: ${dbName}` });
+// Turso — TWO databases, one per environment (env-isolation-instruction).
+// A preview deployment must never touch production data: the app's schema
+// bootstrap runs CREATE/ALTER DDL against whatever TURSO_DATABASE_URL points
+// at on the first request of every cold start, so a shared DB means pushing
+// `beta` migrates production before anyone promotes anything. A house app
+// REFUSES to start when the pairing is wrong (the `-beta` marker is what it
+// reads), so provisioning only one DB here would leave previews dead.
+if (step("turso", "Turso → create production + beta databases")) {
+  const prodDb = `${PROJECT_NAME}-db`;
+  const betaDb = `${prodDb}-beta`;
+  const apiToken = env("TURSO_API_TOKEN");
+  const org = env("TURSO_ORG");
+  const notes = [];
+
+  // Platform API is the primary path: the turso CLI is not installed on this
+  // machine (a `cmd()` call would throw and kill the whole run), and the API
+  // needs no local binary. Falls back to the CLI only when the API creds are
+  // absent, so a machine that does have the CLI still works.
+  async function provisionViaApi(dbName) {
+    const h = { Authorization: `Bearer ${apiToken}` };
+    const base = `https://api.turso.tech/v1/organizations/${org}`;
+
+    // Idempotent: reuse a same-named DB rather than erroring on re-run,
+    // matching how the R2 step reports reuse.
+    const listed = await httpGet(`${base}/databases`, h);
+    const existing = (listed.data?.databases || []).find((d) => d.Name === dbName);
+    let hostname = existing?.Hostname;
+
+    if (existing) {
+      info(`Turso DB already exists, reusing: ${dbName}`);
+    } else {
+      // Every house DB lives in the default group (aws-eu-west-1) — the region
+      // the Vercel functions are pinned to via "regions": ["dub1"].
+      const groups = await httpGet(`${base}/groups`, h);
+      const group = (groups.data?.groups || [])[0]?.name || "default";
+      const created = await httpPost(`${base}/databases`, h, { name: dbName, group });
+      if (!created.ok) {
+        console.error(c(RED, `    ✗ Turso DB create failed (${dbName}): ${created.status} ${JSON.stringify(created.data)}`));
+        return null;
+      }
+      hostname = created.data?.database?.Hostname;
+      info(`Turso DB created: ${dbName}`);
+    }
+
+    const tok = await httpPost(`${base}/databases/${dbName}/auth/tokens`, h, undefined);
+    if (!tok.ok) {
+      console.error(c(RED, `    ✗ Turso token create failed (${dbName}): ${tok.status} ${JSON.stringify(tok.data)}`));
+      return null;
+    }
+    return { url: hostname ? `libsql://${hostname}` : null, token: tok.data?.jwt || null };
+  }
+
+  function provisionViaCli(dbName) {
+    cmd(`turso db create ${dbName} --wait`);
+    return {
+      url: cmd(`turso db show ${dbName} --url`) || null,
+      token: cmd(`turso db tokens create ${dbName}`) || null,
+    };
+  }
+
+  if (DRY_RUN) {
+    note(`GET  https://api.turso.tech/v1/organizations/{org}/databases  — reuse "${prodDb}" / "${betaDb}" if they exist`);
+    note(`POST https://api.turso.tech/v1/organizations/{org}/databases  { name, group: "default" }  ×2`);
+    note(`POST https://api.turso.tech/v1/organizations/{org}/databases/{name}/auth/tokens  ×2`);
+    // Unsuffixed = the BETA store (Preview + Development scopes); _PROD = the
+    // production store, pushed suffix-stripped to Production only in Phase 9.
+    collect("TURSO_DATABASE_URL", `libsql://${betaDb}-yourorg.turso.io`);
+    collect("TURSO_AUTH_TOKEN", "[turso-beta-token]");
+    collect("TURSO_DATABASE_URL_PROD", `libsql://${prodDb}-yourorg.turso.io`);
+    collect("TURSO_AUTH_TOKEN_PROD", "[turso-prod-token]");
+    notes.push(`${prodDb} + ${betaDb}`);
+  } else if (!apiToken || !org) {
+    note("TURSO_API_TOKEN / TURSO_ORG absent — falling back to the turso CLI");
+    const prod = provisionViaCli(prodDb);
+    const beta = provisionViaCli(betaDb);
+    collect("TURSO_DATABASE_URL", beta.url || `libsql://${betaDb}-yourorg.turso.io`);
+    collect("TURSO_AUTH_TOKEN", beta.token || "[turso-beta-token]");
+    collect("TURSO_DATABASE_URL_PROD", prod.url || `libsql://${prodDb}-yourorg.turso.io`);
+    collect("TURSO_AUTH_TOKEN_PROD", prod.token || "[turso-prod-token]");
+    notes.push(`${prodDb} + ${betaDb} (cli)`);
+  } else {
+    const prod = await provisionViaApi(prodDb);
+    const beta = await provisionViaApi(betaDb);
+    collect("TURSO_DATABASE_URL", beta?.url || "[turso-beta-url]");
+    collect("TURSO_AUTH_TOKEN", beta?.token || "[turso-beta-token]");
+    collect("TURSO_DATABASE_URL_PROD", prod?.url || "[turso-prod-url]");
+    collect("TURSO_AUTH_TOKEN_PROD", prod?.token || "[turso-prod-token]");
+    notes.push(`${prodDb} + ${betaDb}`);
+  }
+
+  results.push({ id: "turso", label: "Turso DBs (prod + beta)", status: DRY_RUN ? "dry" : "done", notes: notes.join(", ") });
 }
 
 // Upstash Redis
@@ -660,8 +742,13 @@ if (step("upstash-qstash", "Upstash → get QStash token")) {
 }
 
 // Cloudflare R2
-if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
+if (step("r2", "Cloudflare → create R2 buckets (prod + beta) + S3 API credentials")) {
+  // TWO buckets, ONE credential pair (the token is account-scoped, so it
+  // covers both) — same environment-isolation rule as the Turso step above:
+  // a preview deployment writing into the production bucket puts real objects
+  // there and its deletes remove real ones. env-isolation-instruction.
   const bucketName = `${PROJECT_NAME}-storage`;
+  const betaBucketName = `${bucketName}-beta`;
   const accountId = env("CLOUDFLARE_ACCOUNT_ID");
   const apiToken = env("CLOUDFLARE_API_TOKEN");
   // EU by default: matches the house posture (Turso EU, Vercel dub1) and the
@@ -669,7 +756,10 @@ if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
   // toyfans are all `eu`). The bucket is created under the `eu` jurisdiction
   // (cf-r2-jurisdiction header below), which is why the endpoint needs the
   // `.eu.` infix — the default (non-jurisdiction) endpoint 404s on it.
-  collect("R2_BUCKET_NAME", bucketName);
+  // Unsuffixed = the BETA bucket (Preview + Development scopes); _PROD = the
+  // production bucket, pushed suffix-stripped to Production only in Phase 9.
+  collect("R2_BUCKET_NAME", betaBucketName);
+  collect("R2_BUCKET_NAME_PROD", bucketName);
   collect("R2_ACCOUNT_ID", accountId || "[account-id]");
   collect("R2_ENDPOINT", `https://${accountId || "[account-id]"}.eu.r2.cloudflarestorage.com`);
   // A public bucket domain is a URL nobody can revoke — anything user-owned
@@ -680,8 +770,8 @@ if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
   collect("R2_PUBLIC_DOMAIN", "");
 
   if (DRY_RUN) {
-    note(`GET https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  (cf-r2-jurisdiction: eu) — reuse if "${bucketName}" already exists`);
-    note(`POST https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  { name: "${bucketName}", locationHint: "weur", storageClass: "Standard" }  (cf-r2-jurisdiction: eu)`);
+    note(`GET https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  (cf-r2-jurisdiction: eu) — reuse "${bucketName}" / "${betaBucketName}" if they exist`);
+    note(`POST https://api.cloudflare.com/client/v4/accounts/{id}/r2/buckets  { name: "${bucketName}" | "${betaBucketName}", locationHint: "weur", storageClass: "Standard" }  (cf-r2-jurisdiction: eu)`);
     note(`POST https://api.cloudflare.com/client/v4/accounts/{id}/tokens  (scoped R2 S3 API credentials — NOT /r2/tokens, NOT /user/tokens)`);
     collect("R2_ACCESS_KEY_ID", "[r2-access-key]");
     collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
@@ -699,19 +789,21 @@ if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
     // bucket rather than erroring, matching how the other steps in this file
     // report reuse.
     const listed = await httpGet(`https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`, cfHeaders);
-    const already = listed.ok && (listed.data.result?.buckets || []).find((b) => b.name === bucketName);
-    if (already) {
-      info(`R2 bucket already exists, reusing: ${bucketName}`);
-    } else {
+    const existingBuckets = listed.ok ? (listed.data.result?.buckets || []).map((b) => b.name) : [];
+    for (const name of [bucketName, betaBucketName]) {
+      if (existingBuckets.includes(name)) {
+        info(`R2 bucket already exists, reusing: ${name}`);
+        continue;
+      }
       const created = await httpPost(
         `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
         cfHeaders,
-        { name: bucketName, locationHint: "weur", storageClass: "Standard" }
+        { name, locationHint: "weur", storageClass: "Standard" }
       );
       if (created.ok) {
-        info(`R2 bucket created: ${bucketName}`);
+        info(`R2 bucket created: ${name}`);
       } else {
-        console.error(c(RED, `    ✗ R2 bucket create failed: ${created.status} ${JSON.stringify(created.data)}`));
+        console.error(c(RED, `    ✗ R2 bucket create failed (${name}): ${created.status} ${JSON.stringify(created.data)}`));
       }
     }
 
@@ -756,7 +848,12 @@ if (step("r2", "Cloudflare → create R2 bucket + S3 API credentials")) {
       collect("R2_SECRET_ACCESS_KEY", "[r2-secret]");
     }
   }
-  results.push({ id: "r2", label: "Cloudflare R2 bucket + credentials", status: DRY_RUN ? "dry" : "done", notes: bucketName });
+  results.push({
+    id: "r2",
+    label: "Cloudflare R2 buckets (prod + beta) + credentials",
+    status: DRY_RUN ? "dry" : "done",
+    notes: `${bucketName} + ${betaBucketName}`,
+  });
 }
 
 // Resend
@@ -1112,6 +1209,29 @@ if (step("env", "Write .env.local and push to Vercel")) {
     ([k]) => /^[A-Z][A-Z0-9_]+$/.test(k) && !["CLERK_REDIRECT_URI", "CLERK_DNS_RECORDS", "GOOGLE_VERIFICATION_TXT"].includes(k)
   );
 
+  // ── The `_PROD` convention → Vercel env scopes ────────────────────────────
+  // Vercel env vars are scoped, not name-mangled, so the app reads ONE name
+  // everywhere and simply receives different values per environment. `.env`
+  // stages both halves; this decides where each one lands:
+  //
+  //   FOO_PROD        → pushed as FOO to ["production"]           (suffix stripped)
+  //   FOO (has twin)  → pushed as FOO to ["preview","development"]
+  //   FOO (no twin)   → pushed as FOO to all three
+  //
+  // Before this, EVERY var went to production only — which left preview
+  // deployments with no database at all, not merely a shared one.
+  const PROD_SUFFIX = "_PROD";
+  const keySet = new Set(envVars.map(([k]) => k));
+  function envTarget(key) {
+    if (key.endsWith(PROD_SUFFIX)) {
+      return { name: key.slice(0, -PROD_SUFFIX.length), target: ["production"] };
+    }
+    if (keySet.has(`${key}${PROD_SUFFIX}`)) {
+      return { name: key, target: ["preview", "development"] };
+    }
+    return { name: key, target: ["production", "preview", "development"] };
+  }
+
   const envFileContent = [
     `# Generated by scaffold.js — ${new Date().toISOString()}`,
     `# Project: ${PROJECT_NAME} / ${PROJECT_DOMAIN}`,
@@ -1151,15 +1271,16 @@ if (step("env", "Write .env.local and push to Vercel")) {
         const teamParam = vercelTeamId ? `&teamId=${vercelTeamId}` : "";
         for (const [k, v] of envVars) {
           if (v && !v.startsWith("[")) {
+            const { name, target } = envTarget(k);
             const r = await httpPost(
               `https://api.vercel.com/v10/projects/${vercelProjectId}/env?upsert=true${teamParam}`,
               { Authorization: `Bearer ${vercelToken}` },
-              { key: k, value: v, type: "plain", target: ["production"] }
+              { key: name, value: v, type: "plain", target }
             );
             if (r.ok) {
-              info(`Pushed to Vercel: ${k}`);
+              info(`Pushed to Vercel: ${name} → ${target.join("+")}${name !== k ? c(GREY, `  (from ${k})`) : ""}`);
             } else {
-              console.error(c(RED, `    ✗ Failed to push ${k}: ${r.status} ${JSON.stringify(r.data)}`));
+              console.error(c(RED, `    ✗ Failed to push ${name}: ${r.status} ${JSON.stringify(r.data)}`));
             }
           } else {
             note(`Skipping ${k} — placeholder value, set manually in Vercel dashboard`);
@@ -1170,6 +1291,11 @@ if (step("env", "Write .env.local and push to Vercel")) {
   } else {
     note("Would write to .env.local and push each var via Vercel REST API (POST /v10/projects/{id}/env?upsert=true)");
     note(`Example .env.local written to: ${envPath}`);
+    note("Scope split that would be applied (_PROD → Production, its twin → Preview+Development):");
+    for (const [k] of envVars) {
+      const { name, target } = envTarget(k);
+      if (name !== k || target.length < 3) note(`   ${k}  →  ${name} @ ${target.join("+")}`);
+    }
   }
 
   results.push({ id: "env", label: "Env vars", status: DRY_RUN ? "dry" : "done", notes: envPath });

@@ -64,10 +64,10 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Vercel production branch | 🟢 Automated (2026-07-15) | `PATCH /v9/projects/{id}` right after `vercel link` — `vercel link`'s own auto-detection isn't trusted (see PHASE 2 note) |
 | Vercel beta branch domain | 🟢 Automated (2026-07-15) | `POST /v10/projects/{id}/domains` with `gitBranch: "beta"` — CLI has no branch-scoping flag |
 | Vercel function region | 🟢 Automated | `"regions": ["dub1"]` written into the repo's `vercel.json` — must match the Turso region (aws-eu-west-1); Vercel's default is iad1 (US East) |
-| Turso DB | 🟢 Automated | `turso` CLI |
+| Turso DBs (prod + beta) | 🟢 Automated (2026-08-17) | Platform API — `GET/POST /v1/organizations/{org}/databases` (idempotent: list first, reuse a same-named DB) + `POST .../databases/{db}/auth/tokens`. Creates **two** DBs, `{name}-db` and `{name}-db-beta` (environment isolation, below). The `turso` CLI is only a fallback when `TURSO_API_TOKEN`/`TURSO_ORG` are absent — it is NOT installed on this machine |
 | Upstash Redis | 🟢 Automated | `POST /v2/redis/database` — fields: `database_name`, `platform` (aws/gcp), `primary_region`, `plan`, `tls`. ⚠ Free tier = 1 DB max — if already taken, fetch existing DB via `GET /v2/redis/database/{id}` and reuse |
 | Upstash QStash | 🟡 Partial | `QSTASH_TOKEN` = manual (copy from console.upstash.com/qstash, one-time). Signing keys = automated: `GET https://qstash.upstash.io/v2/keys` with Bearer token → returns `current` + `next` |
-| Cloudflare R2 bucket + S3 API credentials | 🟢 Automated | REST API — `POST /accounts/{id}/r2/buckets` (idempotent: `GET` first, reuse a same-named bucket), `cf-r2-jurisdiction: eu` header. Access keys via `POST /accounts/{id}/tokens` (see Known Limitations) — no dashboard trip needed |
+| Cloudflare R2 buckets (prod + beta) + S3 API credentials | 🟢 Automated | REST API — `POST /accounts/{id}/r2/buckets` (idempotent: `GET` first, reuse a same-named bucket), `cf-r2-jurisdiction: eu` header. Creates **two** buckets, `{name}-storage` and `{name}-storage-beta`, sharing ONE account-scoped credential pair. Access keys via `POST /accounts/{id}/tokens` (see Known Limitations) — no dashboard trip needed |
 | CloudMailin account | 🔴 Always manual | No account creation API. Dashboard only: cloudmailin.com → Sign up |
 | CloudMailin address target | 🟡 Partial | Address + webhook URL = dashboard only (step 2 of setup). DNS MX record → Vercel = automated. Env var `CLOUDMAILIN_WEBHOOK_SECRET` = automated. |
 | Resend domain + key | 🟢 Automated | REST API |
@@ -196,10 +196,10 @@ whatever the zone needs for the subdomain automatically.
 
 ### PHASE 3 — Backend services (parallel, no interdependencies)
 ```
-6a. Turso        → create DB → DB_URL + DB_AUTH_TOKEN
+6a. Turso        → create PROD + BETA DBs → TURSO_DATABASE_URL(_PROD) + TURSO_AUTH_TOKEN(_PROD)
 6b. Upstash      → create Redis → UPSTASH_REDIS_URL + TOKEN
 6c. Upstash      → get QStash token → QSTASH_URL + TOKEN + signing keys
-6d. Cloudflare   → create R2 bucket → R2_ENDPOINT + ACCESS_KEY + SECRET
+6d. Cloudflare   → create PROD + BETA R2 buckets → R2_BUCKET_NAME(_PROD) + R2_ENDPOINT + ACCESS_KEY + SECRET
 6e. Resend       → add domain → DNS records + RESEND_API_KEY
 6f. OpenRouter   → create per-project key → OPENROUTER_API_KEY
 6g. Pollinations → create per-project key (MANUAL) → POLLINATIONS_API_KEY
@@ -288,10 +288,11 @@ whatever the zone needs for the subdomain automatically.
 ### PHASE 9 — Collect & inject all env vars
 ```
 12. Write .env.local + push to Vercel:
-    TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+    TURSO_DATABASE_URL, TURSO_AUTH_TOKEN                  ← the BETA DB
+    TURSO_DATABASE_URL_PROD, TURSO_AUTH_TOKEN_PROD        ← the PRODUCTION DB
     UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN
     QSTASH_URL, QSTASH_TOKEN, QSTASH_CURRENT/NEXT_SIGNING_KEY
-    R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+    R2_BUCKET_NAME (beta), R2_BUCKET_NAME_PROD, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
     RESEND_API_KEY
     VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, NEXT_PUBLIC_VAPID_PUBLIC_KEY
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY
@@ -306,6 +307,44 @@ whatever the zone needs for the subdomain automatically.
     NEXT_PUBLIC_APP_URL             ← https://{domain}
 ```
 
+**Environment isolation — two data stores, and the `_PROD` → scope mapping.**
+The full rule is `blueprint/docs/env-isolation-instruction.md`; what this script
+does about it:
+
+A preview deployment must never read or write production data. The reason is
+the app's own schema bootstrap: it runs `CREATE`/`ALTER` DDL against whatever
+`TURSO_DATABASE_URL` points at on the **first request of every cold start**. The
+`beta` → preview → manual-promote flow gates the *code*, not the database — so
+with one shared DB, pushing `beta` migrates production before anyone has looked
+at the preview, and preview test rows and uploads land in live tables and
+buckets. A blueprint-based app therefore **refuses to start** when the pairing is
+wrong (it reads the `-beta` marker in the store name).
+
+So Phase 3 provisions **two** of each:
+
+| | Production | Preview + Development |
+|---|---|---|
+| Turso | `{name}-db` | `{name}-db-beta` |
+| R2 | `{name}-storage` | `{name}-storage-beta` |
+
+and Phase 9 maps the `_PROD` staging convention onto Vercel's env scopes —
+Vercel env vars are scoped rather than name-mangled, so the app reads ONE name
+everywhere and just receives different values:
+
+| Collected key | Pushed as | Vercel scopes |
+|---|---|---|
+| `FOO_PROD` | `FOO` | `production` |
+| `FOO` (has a `_PROD` twin) | `FOO` | `preview`, `development` |
+| `FOO` (no twin) | `FOO` | `production`, `preview`, `development` |
+
+Before 2026-08-17 every var was pushed to `production` only, which left preview
+deployments with no database at all — not merely a shared one.
+
+Deliberately NOT split, in either direction: the **central-logs DB** (append-only
+observability with a `project` column — splitting it defeats the purpose and
+burns a DB slot per project) and the **Upstash Redis** (free tier is one DB per
+account; isolate by key prefix). Neither gets a `_PROD` twin.
+
 ### PHASE 10 — Launch
 ```
 13. Vercel → trigger production deploy
@@ -313,7 +352,8 @@ whatever the zone needs for the subdomain automatically.
     ☐ DNS propagated (dig +short {domain} or dnschecker.org)
     ☐ Clerk SSO login working
     ☐ DB connection healthy
-    ☐ R2 bucket accessible
+    ☐ R2 buckets accessible (prod + beta)
+    ☐ Preview writes land in {name}-db-beta / {name}-storage-beta, NOT production
     ☐ Resend domain verified (check Resend dashboard)
     ☐ Google OAuth consent screen live (test login)
     ☐ www → non-www redirect working (curl -I https://www.{domain})
@@ -446,18 +486,15 @@ echo ".scaffold-secrets" >> .gitignore
   project targets production (above), no *preview* deployment exists yet for the branch-scoped
   domain; an empty-commit push to `beta` creates one and the 404 resolves.
 - **`teamId` gotcha confirmed again**: every `/v5/domains*` call 403s without `?teamId=<orgId>`.
-- **turso CLI is not installed on this machine** — use the Platform API instead
-  (`TURSO_API_TOKEN` + `TURSO_ORG` are already in scaffold-secrets): create DB under the default
-  group, `POST .../databases/{db}/auth/tokens` for the token.
 - **`UPSTASH_MANAGEMENT_API_KEY` returns 401 with Bearer auth** — key rotated or the API wants
   `Basic email:key`. Shared-Redis reuse from a sibling project's `.env` is the workaround (the
   house ratelimit module namespaces keys per project).
 - **Resend free plan = 1 domain** — adding a second domain 403s ("Your plan includes 1 domain").
 - **Script cwd assumptions are inconsistent**: `vercel`/`turso` steps use `{ cwd: PROJECT_NAME }`
   (expects the workspaces root) but the assets step uses `../website-assets` (expects a project
-  dir). Run from the workspaces root and expect the assets step to fail; env-var names in
-  `collect()` also drifted from the blueprint template's `.env.example` (DATABASE_URL vs
-  TURSO_DATABASE_URL, UPSTASH_REDIS_URL vs UPSTASH_REDIS_REST_URL).
+  dir). Run from the workspaces root and expect the assets step to fail. The Turso env-var
+  drift (`DATABASE_URL` vs the template's `TURSO_DATABASE_URL`) was fixed 2026-08-17;
+  `UPSTASH_REDIS_URL` vs `UPSTASH_REDIS_REST_URL` is still drifted.
 
 ## Changelog
 
@@ -472,6 +509,7 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Added VAPID keypair generation step (Web Push, F15). Uses `npx web-push generate-vapid-keys --json` — no external service, just local key gen. Produces `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY`. |
 | 2026-05 | Phase 9 env push fully replaced with Vercel REST API (`POST /v10/projects/{id}/env?upsert=true`). Cross-platform (no bash heredoc). Reads project ID from `.vercel/project.json`. Requires `VERCEL_TOKEN` in `.scaffold-secrets`. |
 | 2026-07 | Phase 0 code scaffold now exists: the blueprint monorepo (`antigravity-workspaces/blueprint`) + `new-project` skill. `create-app.mjs` generates the repo AND creates/pushes GitHub via REST — run scaffold.js with `--skip github`. |
+| 2026-08-17 | **Environment isolation.** Turso and R2 now provision TWO stores each (`{name}-db` + `{name}-db-beta`, `{name}-storage` + `{name}-storage-beta`), and Phase 9 maps `_PROD` → Production scope / its twin → Preview+Development instead of pushing everything to Production only. Turso moved off the (uninstalled) CLI onto the Platform API, idempotent like the R2 step, and its collected var names were corrected to the template's `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`. Rule: `blueprint/docs/env-isolation-instruction.md`. |
 
 ---
 
