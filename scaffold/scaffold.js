@@ -508,6 +508,41 @@ if (step("vercel", "Vercel → create project & link repo")) {
       );
       if (r.ok) {
         info(`Set productionBranch=main (verify no branch was previously deployed to production unexpectedly)`);
+        // Read it back. `beta` is the GitHub DEFAULT branch (create-app.mjs sets
+        // it so worktrees and cloud sessions start from the trunk), which means
+        // Vercel's auto-detection at link time now leans towards `beta`. The
+        // PATCH above is the only thing standing between that and every routine
+        // beta push deploying to production — and, via the cold-start schema
+        // bootstrap, running DDL against the production database. A PATCH that
+        // returns 200 but does not stick is the failure worth catching here, so
+        // confirm rather than assume.
+        const check = await httpGet(
+          `https://api.vercel.com/v9/projects/${vercelProject.projectId}${vercelTeamParam}`,
+          { Authorization: `Bearer ${vercelToken}` }
+        );
+        const live = check.ok ? check.data?.link?.productionBranch : undefined;
+        if (check.ok && live === "main") {
+          info(`Verified productionBranch reads back as "main"`);
+        } else {
+          console.error(
+            c(
+              RED,
+              `    ✗ productionBranch did NOT read back as "main" (got ${JSON.stringify(live)}).`
+            )
+          );
+          console.error(
+            c(
+              RED,
+              `      STOP. With beta as the default branch, a null/beta productionBranch means`
+            )
+          );
+          console.error(
+            c(RED, `      every beta push deploys to PRODUCTION and migrates the production DB.`)
+          );
+          manual("Set the production branch to `main` manually before pushing anything", [
+            `Dashboard → ${PROJECT_NAME} → Settings → Git → Production Branch → main`,
+          ]);
+        }
       } else {
         console.error(c(RED, `    ✗ Failed to set productionBranch: ${r.status} ${JSON.stringify(r.data)}`));
         manual("Set the production branch to `main` manually", [
