@@ -3,3 +3,8 @@
 .scaffold-secrets*
 !.scaffold-secrets.example
 scaffold/scaffold-log-*.json
+
+# Concurrent-session heartbeats written by the session-guard hook. A claim is a
+# lock, not a log - committing one would make the conflict-prevention file itself
+# a merge conflict.
+.claude/sessions/
