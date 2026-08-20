@@ -459,6 +459,44 @@ echo ".scaffold-secrets" >> .gitignore
 
 ---
 
+## Learnings from the lookslike-ink run (2026-08-20) — fold into the script when touched next
+
+1. **The FIRST git deployment of the GitHub default branch goes to PRODUCTION even
+   when `link.productionBranch` reads back `"main"`.** Verified live: project created
+   via REST with `gitRepository`, read-back said `main`, the first `beta` push built
+   with `target: production` and aliased the apex + www. The read-back is NOT the
+   guard the playbook thought it was — Vercel appears to special-case the initial
+   deployment of the repo's default branch. The SECOND beta push correctly built as
+   preview (`target: null`). Consequence: for a repo whose default branch is `beta`
+   (our convention), expect the first beta push to hit production — harmless on a
+   brand-new project (empty prod DB gets the right schema), but do it consciously,
+   BEFORE real data exists, never as a routine push later.
+2. **`PATCH /v9/projects/{id} {productionBranch}` is GONE** — the API now rejects it
+   as an unknown property (scaffold.js's Phase 2 PATCH currently fails silently into
+   its manual-fallback path). `link.productionBranch` was already `main` on creation
+   in this run, so nothing needed setting — but the script's read-back check is now
+   the only working part of that block. Fix the script when touched next.
+3. **`POST /v5/domains` (raw REST account-domain add) creates a BROKEN domain entry:**
+   `Intended Nameservers: -`, the zone never provisions, every record write 400s with
+   "not a DNS zone", and ns1/ns2.vercel-dns.com answer REFUSED for the domain (lame
+   delegation; public resolvers SERVFAIL). The fix that worked: delete the project +
+   account domain entries, then `vercel domains add <domain> <project>` (CLI) — that
+   path assigns the intended-NS set and provisions the zone immediately.
+4. **scaffold.js cannot run headless**: `step("pollinations", …)` is a bare statement
+   (not `if`-gated), so its `waitForEnter` fires even when the step is skipped and
+   kills a stdin-less run before Phase 4/9 — and every API-collected secret lives
+   only in memory, so the run's Turso/R2/Resend/OpenRouter tokens are lost with it.
+   Ran the tail phases by hand this time. When touched next: gate the pollinations
+   block, and persist collected values incrementally (the `persistSecret` machinery
+   already exists for pasted ones).
+5. **Resend re-runs**: `POST /domains` on an existing domain 403s ("registered
+   already") and the step gives up instead of reusing — GET /domains, match by name,
+   fetch records from the detail endpoint, mint the key against the found id.
+6. **R2_PUBLIC_DOMAIN can be automated** when a project WANTS public objects (e.g.
+   lookslike-ink's gallery images): `PUT /accounts/{id}/r2/buckets/{bucket}/domains/managed
+   {enabled:true}` (with `cf-r2-jurisdiction: eu`) returns the `pub-*.r2.dev` domain.
+   The "left blank on purpose" default stays right for user-owned files.
+
 ## Learnings from the hejsmart run (2026-07-17) — fold into the script when touched next
 
 - **`vercel link` cannot run non-interactively.** REST alternative that works end to end:
