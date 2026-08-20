@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 132" width="120" height="132" role="img" aria-label="lookslike.ink mark, simplified">
+  <g fill="currentColor">
+    <path d="M57.4 104 C56.8 112 55.4 118 55.4 124 C55.4 130 64.6 130 64.6 124 C64.6 118 63.2 112 62.6 104 Z"/>
+    <path d="M45.6 101 C45.2 107 43.6 112 43.6 117 C43.6 122 52.4 122 52.4 117 C52.4 112 50.8 107 50.4 101 Z"/>
+    <path d="M69.6 101 C69.2 107 67.6 112 67.6 117 C67.6 122 76.4 122 76.4 117 C76.4 112 74.8 107 74.4 101 Z"/>
+  </g>
+  <path fill="currentColor" d="M60 104 C54 100 42 102 36 98 C34 92 38 88 46 86 C38 78 20 84 20 74 C20 64 30 62 40 62 C32 54 12 54 14 44 C18 34 36 36 46 42 C38 34 28 24 34 18 C42 14 48 20 54 26 C56 22 57 16 60 10 L60 104 Z"/>
+  <path fill="none" stroke="currentColor" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" d="M60 104 C54 100 42 102 36 98 C34 92 38 88 46 86 C38 78 20 84 20 74 C20 64 30 62 40 62 C32 54 12 54 14 44 C18 34 36 36 46 42 C38 34 28 24 34 18 C42 14 48 20 54 26 C56 22 57 16 60 10"/>
+  <path fill="none" stroke="currentColor" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" d="M60 10 C63 16 64 22 66 26 C72 20 78 14 86 18 C92 24 82 34 74 42 C84 36 102 34 106 44 C108 54 88 54 80 62 C90 62 100 64 100 74 C100 84 82 78 74 86 C82 88 86 92 84 98 C78 102 66 100 60 104"/>
+</svg>

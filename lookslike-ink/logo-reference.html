@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>lookslike.ink — logo reference</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0D0E11;--paper:#FAF9F6;--g60:#5E6068;--g40:#9A9CA3;--g20:#D8D7D2;--red:#D42B36;}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);
+font-family:"IBM Plex Mono",monospace;padding:56px 26px 90px}
+.w{max-width:1000px;margin:0 auto}
+h1{font-family:"Newsreader",serif;font-weight:400;font-size:38px;margin:12px 0 10px}
+.eb{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--g60)}
+.ld{color:var(--g60);font-size:13px;line-height:1.7;max-width:60ch}
+h2{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--g60);font-weight:400;
+border-bottom:1px solid var(--g20);padding-bottom:10px;margin:52px 0 22px}
+.row{display:flex;gap:28px;align-items:flex-end;flex-wrap:wrap}
+.cap{font-size:9.5px;letter-spacing:.1em;color:var(--g40);text-align:center;margin-top:9px}
+.dk{background:var(--ink);border-radius:4px;padding:34px;display:flex;gap:28px;
+align-items:flex-end;flex-wrap:wrap;color:var(--paper)}
+.dk .cap{color:#7A8093}
+.sw{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.s{border:1px solid var(--g20);border-radius:4px;overflow:hidden}
+.s .c{height:66px}.s .i{padding:10px 12px;font-size:11px}
+.s .h{color:var(--g60);font-size:10.5px;margin-top:3px}
+footer{margin-top:56px;border-top:1px solid var(--g20);padding-top:22px;
+color:var(--g60);font-size:11.5px;line-height:1.75;max-width:70ch}
+</style></head><body><div class="w">
+<div class="eb">lookslike.ink · brand reference</div>
+<h1>Mark, cuts, palette</h1>
+<p class="ld">Three cuts of one mark. All use <code>currentColor</code> — set colour on the parent.
+Single-colour, no masks, no clipping, no opacity.</p>
+
+<h2>Full — primary, above 32 px</h2>
+<div class="row">
+<div><img src="lookslike-mark-full.svg" width="150" style="filter:none"><div class="cap">150</div></div>
+<div><img src="lookslike-mark-full.svg" width="96"><div class="cap">96</div></div>
+<div><img src="lookslike-mark-full.svg" width="56"><div class="cap">56</div></div>
+</div>
+
+<h2>Simple — below 32 px</h2>
+<div class="row">
+<div><img src="lookslike-mark-simple.svg" width="110"><div class="cap">110</div></div>
+<div><img src="lookslike-mark-simple.svg" width="48"><div class="cap">48</div></div>
+<div><img src="lookslike-mark-simple.svg" width="30"><div class="cap">30</div></div>
+</div>
+
+<h2>Favicon — 16 to 24 px, square</h2>
+<div class="row">
+<div><img src="lookslike-favicon.svg" width="88"><div class="cap">88</div></div>
+<div><img src="lookslike-favicon.svg" width="32"><div class="cap">32</div></div>
+<div><img src="lookslike-favicon.svg" width="24"><div class="cap">24</div></div>
+<div><img src="lookslike-favicon.svg" width="16"><div class="cap">16</div></div>
+</div>
+
+<h2>Reversed</h2>
+<div class="dk">
+<div><img src="lookslike-mark-full.svg" width="130" style="filter:invert(1)"><div class="cap">full</div></div>
+<div><img src="lookslike-mark-simple.svg" width="70" style="filter:invert(1)"><div class="cap">simple</div></div>
+<div><img src="lookslike-favicon.svg" width="34" style="filter:invert(1)"><div class="cap">favicon</div></div>
+</div>
+
+<h2>Palette</h2>
+<div class="sw">
+<div class="s"><div class="c" style="background:#0D0E11"></div><div class="i">Ink<div class="h">#0D0E11</div></div></div>
+<div class="s"><div class="c" style="background:#FAF9F6;border-bottom:1px solid #D8D7D2"></div><div class="i">Paper<div class="h">#FAF9F6</div></div></div>
+<div class="s"><div class="c" style="background:#5E6068"></div><div class="i">Grey 60<div class="h">#5E6068</div></div></div>
+<div class="s"><div class="c" style="background:#9A9CA3"></div><div class="i">Grey 40<div class="h">#9A9CA3</div></div></div>
+<div class="s"><div class="c" style="background:#D8D7D2"></div><div class="i">Grey 20<div class="h">#D8D7D2</div></div></div>
+<div class="s"><div class="c" style="background:#D42B36"></div><div class="i">Card Red<div class="h">#D42B36 · state only</div></div></div>
+</div>
+
+<footer>The reversed row uses a CSS invert filter for preview convenience only — in production
+set <code>color</code> on the SVG's parent instead. Curve tension across all three cuts is
+hand-plotted and wants a proper vector pass. No wordmark exists for this name yet.</footer>
+</div></body></html>

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 148" width="120" height="148" role="img" aria-label="lookslike.ink mark">
+  <!-- spikes -->
+  <g stroke="currentColor" stroke-linecap="round" fill="none">
+    <path d="M85 19 L94 11" stroke-width="1.7"/>
+    <path d="M35 19 L26 11" stroke-width="1.7"/>
+  </g>
+  <!-- clustered splatter -->
+  <g fill="currentColor">
+    <circle cx="79" cy="9" r="2.1"/><circle cx="41" cy="9" r="2.1"/>
+    <circle cx="74" cy="13" r="1.1"/><circle cx="46" cy="13" r="1.1"/>
+    <circle cx="77" cy="17" r="0.8"/><circle cx="43" cy="17" r="0.8"/>
+    <circle cx="104" cy="6" r="1.5"/><circle cx="16" cy="6" r="1.5"/>
+    <circle cx="109" cy="13" r="0.9"/><circle cx="11" cy="13" r="0.9"/>
+    <circle cx="94" cy="33" r="1.3"/><circle cx="26" cy="33" r="1.3"/>
+    <circle cx="116" cy="50" r="1.9"/><circle cx="4" cy="50" r="1.9"/>
+    <circle cx="103" cy="70" r="1.2"/><circle cx="17" cy="70" r="1.2"/>
+    <circle cx="108" cy="76" r="0.7"/><circle cx="12" cy="76" r="0.7"/>
+  </g>
+  <!-- tapered drips (behind body so joins hide under the fill) -->
+  <g fill="currentColor">
+    <path d="M58.3 104 C57.9 112 57 120 57 128 C57 132.6 63 132.6 63 128 C63 120 62.1 112 61.7 104 Z"/>
+    <path d="M46.6 101 C46.3 108 45.6 114 45.6 120 C45.6 123.7 50.4 123.7 50.4 120 C50.4 114 49.7 108 49.4 101 Z"/>
+    <path d="M70.6 101 C70.3 108 69.6 114 69.6 120 C69.6 123.7 74.4 123.7 74.4 120 C74.4 114 73.7 108 73.4 101 Z"/>
+    <path d="M36.9 99 C36.7 104 36.1 108 36.1 112 C36.1 115 39.9 115 39.9 112 C39.9 108 39.3 104 39.1 99 Z"/>
+    <path d="M80.9 99 C80.7 104 80.1 108 80.1 112 C80.1 115 83.9 115 83.9 112 C83.9 108 83.3 104 83.1 99 Z"/>
+  </g>
+  <!-- left half: filled -->
+  <path fill="currentColor" d="M60 104 C54 100 42 102 36 98 C34 92 38 88 46 86 C38 78 20 84 20 74 C20 64 30 62 40 62 C32 54 12 54 14 44 C18 34 36 36 46 42 C38 34 28 24 34 18 C42 14 48 20 54 26 C56 22 57 16 60 10 L60 104 Z"/>
+  <!-- both halves stroked so outer boundary matches -->
+  <path fill="none" stroke="currentColor" stroke-width="5.5" stroke-linejoin="round" stroke-linecap="round" d="M60 104 C54 100 42 102 36 98 C34 92 38 88 46 86 C38 78 20 84 20 74 C20 64 30 62 40 62 C32 54 12 54 14 44 C18 34 36 36 46 42 C38 34 28 24 34 18 C42 14 48 20 54 26 C56 22 57 16 60 10"/>
+  <path fill="none" stroke="currentColor" stroke-width="5.5" stroke-linejoin="round" stroke-linecap="round" d="M60 10 C63 16 64 22 66 26 C72 20 78 14 86 18 C92 24 82 34 74 42 C84 36 102 34 106 44 C108 54 88 54 80 62 C90 62 100 64 100 74 C100 84 82 78 74 86 C82 88 86 92 84 98 C78 102 66 100 60 104"/>
+  <!-- detached falling droplets -->
+  <g fill="currentColor">
+    <ellipse cx="60" cy="141" rx="2.4" ry="3"/>
+    <ellipse cx="72" cy="130" rx="1.5" ry="1.9"/>
+    <ellipse cx="48" cy="130" rx="1.5" ry="1.9"/>
+  </g>
+</svg>

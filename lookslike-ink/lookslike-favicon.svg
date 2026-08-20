@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="lookslike.ink favicon">
+  <g fill="currentColor">
+    <path d="M54.5 92 C53.8 98 52 104 52 110 C52 117 68 117 68 110 C68 104 66.2 98 65.5 92 Z"/>
+    <path d="M40 88 C39.4 94 37.4 99 37.4 104 C37.4 110 48.6 110 48.6 104 C48.6 99 46.6 94 46 88 Z"/>
+    <path d="M74 88 C73.4 94 71.4 99 71.4 104 C71.4 110 82.6 110 82.6 104 C82.6 99 80.6 94 80 88 Z"/>
+  </g>
+  <path fill="currentColor" transform="translate(0,-4) scale(1,0.92) translate(0,4)" d="M60 100 C54 96 42 98 36 94 C34 88 38 84 46 82 C38 74 20 80 20 70 C20 60 30 58 40 58 C32 50 12 50 14 40 C18 30 36 32 46 38 C38 30 28 20 34 14 C42 10 48 16 54 22 C56 18 57 12 60 6 L60 100 Z"/>
+  <g transform="translate(0,-4) scale(1,0.92) translate(0,4)" fill="none" stroke="currentColor" stroke-width="11" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M60 100 C54 96 42 98 36 94 C34 88 38 84 46 82 C38 74 20 80 20 70 C20 60 30 58 40 58 C32 50 12 50 14 40 C18 30 36 32 46 38 C38 30 28 20 34 14 C42 10 48 16 54 22 C56 18 57 12 60 6"/>
+    <path d="M60 6 C63 12 64 18 66 22 C72 16 78 10 86 14 C92 20 82 30 74 38 C84 32 102 30 106 40 C108 50 88 50 80 58 C90 58 100 60 100 70 C100 80 82 74 74 82 C82 84 86 88 84 94 C78 98 66 96 60 100"/>
+  </g>
+</svg>
