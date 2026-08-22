@@ -83,6 +83,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Microsoft API permissions | 🔴 Always manual | Entra portal: API permissions → Microsoft Graph → Delegated |
 | Microsoft client secret | 🔴 Always manual | Entra portal: Certificates & secrets → New client secret (copy value immediately) |
 | Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
+| Clerk **Organizations** (enable + limits) | 🟢 Automated | `GET`/`PATCH /v1/instance/organization_settings` with Bearer sk_. `GET` returns `{enabled, max_allowed_memberships, max_allowed_roles, creator_role, admin_delete_enabled, domains_enabled, ...}`; `PATCH {"enabled":true,"max_allowed_memberships":20}` → 200. Verified live on regvoice's dev instance 2026-08-22. **Do not confuse with app creation above** - the instance must already exist; this only flips the feature ON for it. Before enabling, `/v1/organizations` 403s with `organization_not_enabled_in_instance`, which is the cheap read-only way to test the state. ⚠️ Re-READ the resource after the PATCH rather than trusting its echo - the oauth_google row below is why that habit exists. 20 members is the free (Hobby) plan's per-org ceiling; 100 orgs per app are included. 🚨 **`enabled:true` also flips `force_organization_selection` to TRUE as a side effect, even though you did not send it.** On a live instance that puts an organisation-selection wall in front of every existing user at sign-in. Send a second `PATCH {"force_organization_selection":false}` immediately and re-read. Hit on regops.systems production 2026-08-22; all three instances patched that day had it. This is the concrete reason the re-read rule above is not paranoia - the PATCH echo shows it too, but only if you look at a field you never set. |
+| Clerk instance STATE without any key | 🟢 Automated | The publishable key is public (it ships in the client bundle) and is base64 of the frontend host: `pk_live_Y2xlcmsucmVnb3BzLnN5c3RlbXMk` → `clerk.regops.systems`. That host answers **unauthenticated** `GET /v1/environment?__clerk_api_version=2021-02-05&_clerk_js_version=5` with `display_config.instance_environment_type`, `application_name`, `home_url` and the whole `organization_settings` block. So you can read ANY deployed instance's config - including whether organizations are on - straight off its live site with curl, no secret, no dashboard. Scrape the pk from the site's JS bundle. Verified 2026-08-22. Complements the key-RECOVERY row below: reading state is free, writing it still needs the sk. |
 | Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → `cname_targets[]` (`host`/`value`/`required`) = exactly what the dashboard's "Copy DNS instructions" button emits. Needs the **production** key: an `sk_test_` instance has no custom domain and returns no targets. Verified live 2026-07-15. |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
 | Clerk keys → Vercel | 🟡 Partial (doc was aspirational — corrected 2026-07-19) | Phase 6 collects ONLY the prod instance (pk_live/sk_live) and Phase 9 pushes EVERY var to `target:["production"]` ONLY (scaffold.js ~L1039). So the dev-instance keys (pk_test/sk_test), the preview+development scopes, and the `VITE_` publishable mirror are NOT automated — set per-scope by hand via REST upsert (below). **Never `vercel env add`**: its stdin path prints `✓ Added` but stores an EMPTY value on Windows PowerShell (bit hejsmart 2026-07-19). Verify every write with `vercel env pull <f> --environment=<production\|preview\|development>`. Active CLI token: `%APPDATA%\xdg.data\com.vercel.cli\auth.json` (`.token`); the `\com.vercel.cli\Data\` copy is stale → 403. Scope map: dev `pk_test/sk_test` → preview+development, prod `pk_live/sk_live` → production, unsuffixed names (`VITE_CLERK_PUBLISHABLE_KEY`+`CLERK_PUBLISHABLE_KEY`+`CLERK_SECRET_KEY`). **TODO: make Phase 9 `_PROD`-aware (see Known Limitations).** |
@@ -344,6 +346,32 @@ Deliberately NOT split, in either direction: the **central-logs DB** (append-onl
 observability with a `project` column — splitting it defeats the purpose and
 burns a DB slot per project) and the **Upstash Redis** (free tier is one DB per
 account; isolate by key prefix). Neither gets a `_PROD` twin.
+
+### PHASE 9b — GitHub Actions secrets (repo CI, not app runtime)
+
+Some credentials belong to a repository's CI rather than to the running app,
+so they go into GitHub Actions secrets instead of Vercel env. Today that is the
+reMarkable device token, used by the `remarkable-sync` module.
+
+```
+node scaffold/push-github-secrets.mjs --repo <owner>/<name> \
+     --secret REMARKABLE_DEVICE_TOKEN
+```
+
+Reads `.scaffold-secrets`, fetches the repo's public key, seals each value with
+libsodium `crypto_box_seal` and PUTs it. Prints names, byte counts and sha256
+prefixes only — never a value. `--dry-run` resolves and seals without sending;
+`--self-test` proves the sealing round-trips and exits.
+
+- Needs `GITHUB_TOKEN` to carry repository permission **Secrets: Read and
+  write**. Added to `claude-scaffold-automation` on 2026-08-22; before that it
+  held only metadata + code/administration, and every `actions/*` call was 403.
+- The one dependency in an otherwise dependency-free toolchain: GitHub will not
+  accept a plaintext secret, and Node has no XSalsa20, so the seal cannot be
+  done with `node:crypto` alone. It installs `libsodium-wrappers` into an
+  OS-temp directory on first run — no package.json anywhere gains a line.
+- Only push a secret to a repo that actually needs it. These are per-repo, and
+  a personal account has no organisation-level secrets to fall back on.
 
 ### PHASE 10 — Launch
 ```
