@@ -61,7 +61,8 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | GitHub repo | 🟢 Automated | `gh` CLI |
 | website-assets folder | 🟢 Automated | git push |
 | Vercel project + domain | 🟢 Automated | REST API — `POST /v10/projects/{id}/domains` (redirect field = www→non-www built in) |
-| Vercel production branch | 🟢 Automated (2026-07-15) | `PATCH /v9/projects/{id}` right after `vercel link` — `vercel link`'s own auto-detection isn't trusted (see PHASE 2 note) |
+| Vercel git-link an EXISTING project | 🟢 Automated via CLI (2026-08-29) | No REST endpoint exists for this (confirmed against the live `openapi.vercel.sh` spec — `/v11/projects` POST only accepts `gitRepository` at CREATE time; there is no `/v9/projects/{id}/link`). Working recipe: `vercel link --yes --project <name> --team <teamId> -t $VERCEL_TOKEN --non-interactive` (writes `.vercel/project.json` against the pre-existing project — safe, does NOT create a duplicate), then `vercel git connect <https-repo-url> -t $VERCEL_TOKEN --non-interactive --yes`. Verified end to end on `fineally` 2026-08-29 against a project that had zero prior git link. |
+| Vercel production branch | 🔴 NOT settable via API/CLI post-link (corrected 2026-08-29) | `PATCH /v9/projects/{id} {productionBranch}` is REJECTED (`should NOT have additional property`) — confirmed against the current `openapi.vercel.sh` schema, not just the 2026-08-20 lookslike-ink field report below. No CLI subcommand sets it either (`vercel project update` only covers build/dev/install commands, framework, output dir). On `fineally` the read-back **LIED**: `link.productionBranch` reported `"main"` while the very next push to `beta` produced a deployment with `target: "production"`. So re-reading the setting is NOT sufficient — **verify with a real push** (`GET /v6/deployments?projectId=…` → `target` must be `preview` for the working branch). There IS an automated fix, found 2026-08-29 and used on `fineally`: temporarily set the GitHub repo's default branch to `main` (`PATCH /repos/{o}/{r} {"default_branch":"main"}`), run `vercel git disconnect` then `vercel git connect`, then set the GitHub default back to `beta`. Vercel takes the production branch from the repo default AT CONNECT TIME, which is why this works and why reusing a pre-existing Vercel project (link added later, repo default already `beta`) gets it wrong where `vercel link` on a fresh project does not. |
 | Vercel beta branch domain | 🟢 Automated (2026-07-15) | `POST /v10/projects/{id}/domains` with `gitBranch: "beta"` — CLI has no branch-scoping flag |
 | Vercel function region | 🟢 Automated | `"regions": ["dub1"]` written into the repo's `vercel.json` — must match the Turso region (aws-eu-west-1); Vercel's default is iad1 (US East) |
 | Turso DBs (prod + beta) | 🟢 Automated (2026-08-17) | Platform API — `GET/POST /v1/organizations/{org}/databases` (idempotent: list first, reuse a same-named DB) + `POST .../databases/{db}/auth/tokens`. Creates **two** DBs, `{name}-db` and `{name}-db-beta` (environment isolation, below). The `turso` CLI is only a fallback when `TURSO_API_TOKEN`/`TURSO_ORG` are absent — it is NOT installed on this machine |
@@ -562,6 +563,49 @@ echo ".scaffold-secrets" >> .gitignore
   drift (`DATABASE_URL` vs the template's `TURSO_DATABASE_URL`) was fixed 2026-08-17;
   `UPSTASH_REDIS_URL` vs `UPSTASH_REDIS_REST_URL` is still drifted.
 
+## Learnings from the fineally run (2026-08-29) — fold into the script when touched next
+
+1. **Linking git to a Vercel project that already exists (created out-of-band,
+   e.g. by hand for a domain that was already live) has no REST path.**
+   Checked the live `openapi.vercel.sh` spec directly rather than trusting
+   memory: `POST /v11/projects` (project creation moved off `/v9` at some
+   point) accepts `gitRepository: { type, repo }` but ONLY at creation; the
+   `PATCH /v9/projects/{idOrName}` schema has no `gitRepository`, no `link`,
+   and no `productionBranch` property at all — sending any of them 400s as an
+   unknown property. There is no `/v9/projects/{id}/link` endpoint either
+   (searched every path containing "link", "git", or "connect" in the spec).
+   The working path is two CLI calls, fully non-interactive:
+   ```
+   vercel link --yes --project <name> --team <teamId> -t $VERCEL_TOKEN --non-interactive
+   vercel git connect <https-repo-url> -t $VERCEL_TOKEN --non-interactive --yes
+   ```
+   The first writes `.vercel/project.json` against the EXISTING project (by
+   name — confirmed it does not create a second project); the second reads
+   that file and performs the link. Needs the Vercel CLI installed
+   (`npm i -g vercel`) — REST alone cannot do this today.
+2. **`productionBranch` cannot be set explicitly at all post-link, by any
+   documented path.** It is decided by Vercel at the moment `git connect`
+   runs and is read-only afterward (confirmed against the spec, not just
+   inferred from a 400). On fineally it came back `"main"` even though the
+   repo's own configured default branch is `beta` — so it is NOT simply
+   "whatever branch GitHub calls default" either; treat it as opaque and
+   **always verify with `GET /v9/projects/{id}?teamId=...` → `link.productionBranch`
+   after connecting**, don't assume either way. If it lands wrong, the only
+   fix today is Dashboard → Settings → Git → Production Branch — there is no
+   API or CLI escape hatch, which makes this the same "manual, no exceptions"
+   category as the Clerk Google SSO row above.
+3. **Upstash `UPSTASH_MANAGEMENT_API_KEY` with `Authorization: Bearer` on
+   `GET /v2/redis/database` still fails** — this time with `token contains an
+   invalid number of segments` (the endpoint expects a JWT-shaped bearer
+   token; the stored key isn't one). This reconfirms the 2026-07-17 hejsmart
+   finding below rather than being a new break. The reuse workaround is
+   simpler than re-deriving Basic auth: every sibling project's `.env` already
+   carries the one shared Redis's `UPSTASH_REDIS_REST_URL` /
+   `UPSTASH_REDIS_REST_TOKEN` — grep any of them (they're all identical,
+   confirmed across 8 projects on this account) and reuse directly, verified
+   live with a `GET {url}/ping` → `PONG`. Fixing the management-key auth is
+   still open; this is the pragmatic bypass, not a fix.
+
 ## Changelog
 
 | Date | Change |
@@ -576,6 +620,7 @@ echo ".scaffold-secrets" >> .gitignore
 | 2026-05 | Phase 9 env push fully replaced with Vercel REST API (`POST /v10/projects/{id}/env?upsert=true`). Cross-platform (no bash heredoc). Reads project ID from `.vercel/project.json`. Requires `VERCEL_TOKEN` in `.scaffold-secrets`. |
 | 2026-07 | Phase 0 code scaffold now exists: the blueprint monorepo (`antigravity-workspaces/blueprint`) + `new-project` skill. `create-app.mjs` generates the repo AND creates/pushes GitHub via REST — run scaffold.js with `--skip github`. |
 | 2026-08-17 | **Environment isolation.** Turso and R2 now provision TWO stores each (`{name}-db` + `{name}-db-beta`, `{name}-storage` + `{name}-storage-beta`), and Phase 9 maps `_PROD` → Production scope / its twin → Preview+Development instead of pushing everything to Production only. Turso moved off the (uninstalled) CLI onto the Platform API, idempotent like the R2 step, and its collected var names were corrected to the template's `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`. Rule: `blueprint/docs/env-isolation-instruction.md`. |
+| 2026-08-29 | **Vercel git-link on a pre-existing project has no REST path** (confirmed against the live openapi spec) — `vercel link --yes --project <name> --team <teamId> --non-interactive` then `vercel git connect <url> --non-interactive --yes` is the verified working recipe. `productionBranch` is confirmed read-only post-link by any means (API or CLI) — verify with a GET after connecting, don't assume. Upstash management-key `GET /v2/redis/database` still broken; reuse a sibling project's `.env` Redis creds instead (all identical across the account). |
 
 ---
 

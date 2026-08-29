@@ -1,0 +1,6 @@
+{
+  "$comment": "Canonical operator identity for legal pages (privacy/terms/imprint) across ALL house projects. blueprint's create-app.mjs reads this at generation time and bakes the values into the new repo's src/pages/Legal.tsx, so a generated app never ships bracketed placeholders (a repo-guardrails test enforces that). {domain} in contactEmailPattern is replaced with the project's domain - the hello@ address is served by Spaceship email forwarding (enable per domain). operatorAddress follows the owner's live precedent (hejsmart imprint): city-level, consciously. Not secret - imprint data is public by law - but it lives here so there is ONE place to update.",
+  "operatorName": "Patrick Reichmann",
+  "operatorAddress": "Vienna, Austria",
+  "contactEmailPattern": "hello@{domain}"
+}

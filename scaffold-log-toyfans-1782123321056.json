@@ -1,0 +1,129 @@
+{
+  "project": "toyfans",
+  "domain": "toyfans.org",
+  "dryRun": true,
+  "timestamp": "2026-06-22T10:15:21.056Z",
+  "results": [
+    {
+      "id": "spaceship",
+      "label": "Spaceship → point NS to Vercel",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "github",
+      "label": "GitHub → create project repo",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "assets",
+      "label": "GitHub → create assets folder in website-assets",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "vercel",
+      "label": "Vercel → create project & link repo",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "turso",
+      "label": "Turso DB",
+      "status": "dry",
+      "notes": "db: toyfans-db"
+    },
+    {
+      "id": "upstash-redis",
+      "label": "Upstash Redis",
+      "status": "dry",
+      "notes": ""
+    },
+    {
+      "id": "upstash-qstash",
+      "label": "Upstash → get QStash token",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "r2",
+      "label": "Cloudflare R2 bucket",
+      "status": "dry",
+      "notes": "toyfans-storage"
+    },
+    {
+      "id": "resend",
+      "label": "Resend → add domain & create API key",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "openrouter",
+      "label": "OpenRouter API key",
+      "status": "dry",
+      "notes": "Per-project key"
+    },
+    {
+      "id": "pollinations",
+      "label": "Pollinations API key",
+      "status": "manual",
+      "notes": "No API exists yet"
+    },
+    {
+      "id": "vapid",
+      "label": "Generate VAPID keypair for Web Push notifications",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "dns-pass1",
+      "label": "Vercel DNS → add Resend + email forwarding records",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "google",
+      "label": "Google Cloud → project + OAuth client",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "clerk",
+      "label": "Clerk → create application & configure",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "dns-pass2",
+      "label": "Vercel DNS → add Clerk + Google records",
+      "status": "skipped",
+      "notes": ""
+    },
+    {
+      "id": "env",
+      "label": "Env vars",
+      "status": "dry",
+      "notes": ".env.local.toyfans.example"
+    },
+    {
+      "id": "deploy",
+      "label": "Vercel → trigger production deploy",
+      "status": "skipped",
+      "notes": ""
+    }
+  ],
+  "collectedKeys": [
+    "DATABASE_URL",
+    "DATABASE_AUTH_TOKEN",
+    "UPSTASH_REDIS_URL",
+    "UPSTASH_REDIS_TOKEN",
+    "R2_BUCKET_NAME",
+    "R2_ACCOUNT_ID",
+    "R2_ENDPOINT",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "OPENROUTER_API_KEY",
+    "POLLINATIONS_API_KEY"
+  ]
+}
