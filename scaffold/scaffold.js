@@ -724,27 +724,55 @@ if (step("turso", "Turso → create production + beta databases")) {
   results.push({ id: "turso", label: "Turso DBs (prod + beta)", status: DRY_RUN ? "dry" : "done", notes: notes.join(", ") });
 }
 
+// Upstash's Management API takes HTTP Basic auth as email:api_key — NOT a
+// Bearer token. Sending the raw key as a Bearer token 401s with "token
+// contains an invalid number of segments" (Upstash tries to parse it as a
+// JWT), which reads exactly like a stale/malformed key even when the key is
+// perfectly valid. Confirmed live 2026-08-31 against a real account: the
+// same key that 401s as `Bearer <key>` returns 200 as `Basic base64(email:key)`.
+function upstashAuthHeader(key) {
+  const email = env("UPSTASH_ACCOUNT_EMAIL");
+  return { Authorization: `Basic ${Buffer.from(`${email}:${key}`).toString("base64")}` };
+}
+
 // Upstash Redis
 if (step("upstash-redis", "Upstash → create Redis instance")) {
   if (DRY_RUN) {
-    note(`POST https://api.upstash.com/v2/redis/database  { name: "${PROJECT_NAME}-redis" }`);
+    note(`POST https://api.upstash.com/v2/redis/database  { database_name: "${PROJECT_NAME}-redis" }`);
     collect("UPSTASH_REDIS_URL", "[upstash-redis-url]");
     collect("UPSTASH_REDIS_TOKEN", "[upstash-redis-token]");
   } else {
     const key = env("UPSTASH_MANAGEMENT_API_KEY");
-    if (!key) {
-      manual("Set UPSTASH_MANAGEMENT_API_KEY in .scaffold-secrets", ["Get it from: upstash.com → Account → Management API"]);
+    const email = env("UPSTASH_ACCOUNT_EMAIL");
+    if (!key || !email) {
+      manual(
+        "Set UPSTASH_MANAGEMENT_API_KEY and UPSTASH_ACCOUNT_EMAIL in .scaffold-secrets",
+        ["Key: upstash.com → Account → Management API. Email: the address you log into console.upstash.com with."]
+      );
     } else {
       const r = await httpPost(
         "https://api.upstash.com/v2/redis/database",
-        { Authorization: `Bearer ${key}` },
-        { name: `${PROJECT_NAME}-redis`, region: "eu-west-1", tls: true }
+        upstashAuthHeader(key),
+        { database_name: `${PROJECT_NAME}-redis`, platform: "aws", primary_region: "eu-west-1", tls: true }
       );
       if (r.ok) {
         collect("UPSTASH_REDIS_URL", r.data.endpoint ? `rediss://${r.data.endpoint}` : "[url]");
-        collect("UPSTASH_REDIS_TOKEN", r.data.password || "[token]");
+        collect("UPSTASH_REDIS_TOKEN", r.data.password || r.data.rest_token || "[token]");
+      } else if (r.status === 401) {
+        console.error(c(RED, `    ✗ Upstash API error (401): ${JSON.stringify(r.data)}`));
       } else {
-        console.error(c(RED, `    ✗ Upstash API error: ${JSON.stringify(r.data)}`));
+        // Free tier = 1 Redis DB max. Reuse the existing one rather than
+        // fail — same idempotency rule as the R2/Turso steps.
+        console.error(c(YELLOW, `    ⚠ Create failed (${r.status}): ${JSON.stringify(r.data)} — checking for an existing DB to reuse`));
+        const list = await httpGet("https://api.upstash.com/v2/redis/databases", upstashAuthHeader(key));
+        const existing = Array.isArray(list.data) && (list.data.find((d) => d.database_name === `${PROJECT_NAME}-redis`) || list.data[0]);
+        if (existing) {
+          collect("UPSTASH_REDIS_URL", existing.endpoint ? `rediss://${existing.endpoint}` : "[url]");
+          collect("UPSTASH_REDIS_TOKEN", existing.password || existing.rest_token || "[token]");
+          info(`Reusing existing Redis DB: ${existing.database_name}`);
+        } else {
+          console.error(c(RED, `    ✗ No existing DB to reuse either`));
+        }
       }
     }
   }
@@ -762,9 +790,10 @@ if (step("upstash-qstash", "Upstash → get QStash token")) {
     collect("QSTASH_NEXT_SIGNING_KEY", "[next-signing-key]");
   } else {
     const key = env("UPSTASH_MANAGEMENT_API_KEY");
-    if (key) {
+    const email = env("UPSTASH_ACCOUNT_EMAIL");
+    if (key && email) {
       const r = await fetch("https://api.upstash.com/v2/qstash/keys", {
-        headers: { Authorization: `Bearer ${key}` },
+        headers: upstashAuthHeader(key),
       });
       const data = await r.json().catch(() => ({}));
       collect("QSTASH_URL", "https://qstash.upstash.io");
