@@ -74,6 +74,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Resend domain + key | 🟢 Automated | REST API |
 | VAPID keypair (Web Push) | 🟢 Automated | `npx web-push generate-vapid-keys --json` — generates P-256 EC pair locally, no external service |
 | OpenRouter per-project key | 🟢 Automated | Provisioning API |
+| Pollinations per-project key | 🟢 Automated (2026-08-31) | `POST https://gen.pollinations.ai/account/keys` with `Authorization: Bearer $POLLINATIONS_ACCOUNT_KEY` (an `sk_` key carrying `account:keys`) — `{ name, type: "secret" }`, full key returned once. Create the account key once at enter.pollinations.ai/keys. |
 | Google Cloud project + APIs | 🟢 Automated | `gcloud` CLI — enable gmail, calendar-json, people APIs |
 | Google OAuth consent screen | 🔴 Always manual | IAP brand API requires Workspace org (personal accounts blocked). Cloud Console only: APIs & Services → OAuth consent screen |
 | Google OAuth client ID/secret | 🔴 Always manual | Cloud Console only: Credentials → Create OAuth client ID → Web application → add redirect URIs |
@@ -90,7 +91,6 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
 | Clerk keys → Vercel | 🟡 Partial (doc was aspirational — corrected 2026-07-19) | Phase 6 collects ONLY the prod instance (pk_live/sk_live) and Phase 9 pushes EVERY var to `target:["production"]` ONLY (scaffold.js ~L1039). So the dev-instance keys (pk_test/sk_test), the preview+development scopes, and the `VITE_` publishable mirror are NOT automated — set per-scope by hand via REST upsert (below). **Never `vercel env add`**: its stdin path prints `✓ Added` but stores an EMPTY value on Windows PowerShell (bit hejsmart 2026-07-19). Verify every write with `vercel env pull <f> --environment=<production\|preview\|development>`. Active CLI token: `%APPDATA%\xdg.data\com.vercel.cli\auth.json` (`.token`); the `\com.vercel.cli\Data\` copy is stale → 403. Scope map: dev `pk_test/sk_test` → preview+development, prod `pk_live/sk_live` → production, unsuffixed names (`VITE_CLERK_PUBLISHABLE_KEY`+`CLERK_PUBLISHABLE_KEY`+`CLERK_SECRET_KEY`). **TODO: make Phase 9 `_PROD`-aware (see Known Limitations).** |
 | Clerk key RECOVERY (lost sk) | 🔴 Always manual | No API can return an instance secret key — the Backend API authenticates WITH it (chicken-and-egg), and `/api_keys` / machine-key secrets are one-time-at-creation only (verified 2026-07-17). Dashboard → Configure → API keys, or Chrome automation. **Prevention (scripted since 2026-07-17): `scaffold.js` auto-mirrors every pasted secret into `.scaffold-secrets` as `NAME_<PROJECT>`** (Clerk pk/sk, redirect URI, Google client id/secret) via `persistSecret()`/`askSecret()` — re-runs offer the stored copy (Enter = reuse, paste = rotate in place). Deleting the Vercel env var is never a lockout again (bit deepsonda prod on 2026-07-17). |
-| Pollinations key | 🔴 Always manual | No management API yet (as of May 2026) |
 | Spaceship NS change | 🟢 Automated | REST API — `PUT /v1/domains/{domain}/nameservers` |
 | Spaceship DNS records | 🟢 Automated | REST API — `PUT /v1/dns/records/{domain}` |
 | Spaceship email forwarding DNS | 🟢 Automated (records) | The 3 "Email Forwarding Free" records — 2× MX → `mx1`/`mx2.efwd.spaceship.net` (pref 0) + apex SPF TXT `v=spf1 include:spf.efwd.spaceship.net ~all` — are pushed to Vercel DNS by the dedicated `email-forwarding` step. The VALUES are constant across every domain; only the host varies (always the project apex). Enabling the forwards AND Spaceship's "Verify DNS changes" button have **no public API** — the whole `docs.spaceship.dev` surface is domains/DNS/nameservers/contacts only (confirmed 2026-07-19) → Chrome/dashboard only. Apex SPF assumes Resend sends from the `send.` subdomain (it does); if a project ever sends AS the bare apex, merge the two `v=spf1` includes into one record. |
@@ -205,7 +205,7 @@ whatever the zone needs for the subdomain automatically.
 6d. Cloudflare   → create PROD + BETA R2 buckets → R2_BUCKET_NAME(_PROD) + R2_ENDPOINT + ACCESS_KEY + SECRET
 6e. Resend       → add domain → DNS records + RESEND_API_KEY
 6f. OpenRouter   → create per-project key → OPENROUTER_API_KEY
-6g. Pollinations → create per-project key (MANUAL) → POLLINATIONS_API_KEY
+6g. Pollinations → create per-project key → POLLINATIONS_API_KEY
 6h. CloudMailin  → create account (MANUAL) → create address target (MANUAL)
                    → generate CLOUDMAILIN_WEBHOOK_SECRET (automated)
                    → webhook URL: https://{domain}/api/webhook/email?secret={secret}
@@ -304,7 +304,7 @@ whatever the zone needs for the subdomain automatically.
     NEXT_PUBLIC_GOOGLE_PROJECT_ID
     GEMINI_API_KEY                  ← global, from your vault
     OPENROUTER_API_KEY              ← per-project
-    POLLINATIONS_API_KEY            ← per-project (manual)
+    POLLINATIONS_API_KEY            ← per-project
     CLOUDMAILIN_WEBHOOK_SECRET      ← generated, not copied from dashboard
     CLOUDMAILIN_ADDRESS             ← copied from CloudMailin dashboard (the @cloudmailin.net address)
     NEXT_PUBLIC_APP_URL             ← https://{domain}
@@ -456,6 +456,7 @@ SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-man
 SPACESHIP_SECRET_KEY=...                     # spaceship.com/application/api-manager/ → API secret
                                              # Required scopes: domains:write, dnsrecords:write, dnsrecords:read
 OPENROUTER_PROVISIONING_KEY=sk-or-v1-...    # create once at openrouter.ai/settings/keys → type: Provisioning
+POLLINATIONS_ACCOUNT_KEY=sk_...              # create once at enter.pollinations.ai/keys → type: secret, grant account:keys
 UPSTASH_MANAGEMENT_API_KEY=...               # upstash.com → Account → Management API
 RESEND_API_KEY=re_...                        # your global key (script creates per-project subkeys)
 CLOUDFLARE_ACCOUNT_ID=...                    # dash.cloudflare.com
@@ -478,7 +479,7 @@ echo ".scaffold-secrets" >> .gitignore
 - **Microsoft Entra app registration**: Fully manual. portal.azure.com → Entra ID → App registrations → New registration. No CLI or API path for personal Microsoft accounts. Required fields: name, account type (multitenant + personal), redirect URIs. Client secret must be copied immediately after creation (only shown once). Permissions: `Mail.Read`, `Calendars.ReadWrite`, `User.Read`, `offline_access` — all Delegated (not Application). Secret expiry: max 24 months; add a calendar reminder to rotate before expiry.
 - **Google OAuth consent screen + client**: Fully manual for personal Google accounts. IAP brand API (`iap.googleapis.com/v1/projects/{id}/brands`) requires a Google Workspace org — personal projects get `"Project must belong to an organization"`. `gcloud alpha` components need admin rights to install. `clientauthconfig.googleapis.com` returns 404. No working programmatic path exists for personal accounts. Use Cloud Console: console.cloud.google.com → APIs & Services → OAuth consent screen, then Credentials → Create OAuth client ID.
 - **Clerk social login config**: `PATCH /v1/instance/social_connections/oauth_google` does NOT exist — returns 404. The Clerk Backend API has no endpoint for configuring social providers. **Do not attempt to automate this — you will get a 404 which can produce a false positive if error handling is sloppy.** Must be done in the dashboard: Configure → SSO → Google → toggle "Use custom credentials" → paste Client ID + Secret. There is no way to confirm success programmatically; verify in the dashboard UI after saving.
-- **Pollinations key management API**: Feature requested Jan 2026, not shipped yet. Check: [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766)
+- **Pollinations key management API**: Shipped (confirmed 2026-08-31, `APIDOCS.md` on `pollinations/pollinations`). `POST /account/keys` on `https://gen.pollinations.ai` — Bearer an `sk_` account key with `account:keys` permission, body `{ name, type: "secret", allowedModels?, pollenBudget?, expiresIn? }`, full key value returned once. The `keys` account permission is auto-stripped from child keys, so a provisioned per-project key can never itself mint further keys. `GET /account/keys` lists (no secret values); `DELETE /account/keys/{id}` revokes (cannot revoke the key used to authenticate). Originally requested at [github.com/pollinations/pollinations/issues/6766](https://github.com/pollinations/pollinations/issues/6766).
 - **Upstash Redis**: `POST /v2/redis/database` works — correct fields are `database_name` (not `name`), `platform` (aws/gcp, required), `primary_region`. Free tier = 1 DB max. If the slot is taken, fetch the existing DB via `GET /v2/redis/database/{id}` — `rest_token` and `endpoint` are returned directly, no manual copy needed. Auth: Basic `email:api_key`.
 - **Upstash QStash token**: `QSTASH_TOKEN` must be copied manually from console.upstash.com/qstash (no Management API endpoint). Once you have it, signing keys are automated: `GET https://qstash.upstash.io/v2/keys` with `Authorization: Bearer $QSTASH_TOKEN`.
 - **Vercel CLI**: Dropped from scaffold.js — replaced by REST API (`https://api.vercel.com`). Was bash-only due to heredoc `<<< "value"` in `vercel env add`. REST API is cross-platform and needs only `VERCEL_TOKEN`.
@@ -511,13 +512,13 @@ echo ".scaffold-secrets" >> .gitignore
    delegation; public resolvers SERVFAIL). The fix that worked: delete the project +
    account domain entries, then `vercel domains add <domain> <project>` (CLI) — that
    path assigns the intended-NS set and provisions the zone immediately.
-4. **scaffold.js cannot run headless**: `step("pollinations", …)` is a bare statement
-   (not `if`-gated), so its `waitForEnter` fires even when the step is skipped and
-   kills a stdin-less run before Phase 4/9 — and every API-collected secret lives
-   only in memory, so the run's Turso/R2/Resend/OpenRouter tokens are lost with it.
-   Ran the tail phases by hand this time. When touched next: gate the pollinations
-   block, and persist collected values incrementally (the `persistSecret` machinery
-   already exists for pasted ones).
+4. **scaffold.js cannot run fully headless**: every API-collected secret lives only
+   in memory, so a crash mid-run loses the run's Turso/R2/Resend/OpenRouter/Pollinations
+   tokens with it. Ran the tail phases by hand this time. When touched next: persist
+   collected values incrementally (the `persistSecret` machinery already exists for
+   pasted ones). (The pollinations step itself was un-gated `waitForEnter` at the time
+   of this run — fixed 2026-08-31 when the step became API-driven and `if`-gated like
+   `openrouter`.)
 5. **Resend re-runs**: `POST /domains` on an existing domain 403s ("registered
    already") and the step gives up instead of reusing — GET /domains, match by name,
    fetch records from the detail endpoint, mint the key against the found id.

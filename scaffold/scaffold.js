@@ -66,7 +66,7 @@ Optional:
 
 Step IDs you can skip:
   spaceship, github, assets, vercel, turso, upstash-redis, upstash-qstash,
-  r2, resend, openrouter, vapid, google, clerk, dns-pass1, dns-pass2, env, deploy
+  r2, resend, openrouter, pollinations, vapid, google, clerk, dns-pass1, dns-pass2, env, deploy
 
 Example:
   node scaffold.js --name myapp --domain myapp.com --gh-user patrickXYZ \\
@@ -969,18 +969,38 @@ if (step("openrouter", "OpenRouter → create per-project API key")) {
 }
 
 // Pollinations
-step("pollinations", "Pollinations → API key (MANUAL — no API yet)");
-manual(
-  "Create a per-project key manually at enter.pollinations.ai",
-  [
-    "Log in → Settings → Developer Settings → API Keys",
-    `Name it: ${PROJECT_NAME}-prod`,
-    "Copy the key immediately — shown only once",
-  ]
-);
-collect("POLLINATIONS_API_KEY", "[manual — see enter.pollinations.ai]");
-await waitForEnter("Have you copied your Pollinations API key?");
-results.push({ id: "pollinations", label: "Pollinations API key", status: "manual", notes: "No API exists yet" });
+if (step("pollinations", "Pollinations → create per-project API key")) {
+  if (DRY_RUN) {
+    note(`POST https://gen.pollinations.ai/account/keys  { name: "${PROJECT_NAME}-prod", type: "secret" }`);
+    note("Requires POLLINATIONS_ACCOUNT_KEY (an sk_ key with account:keys) — create one at enter.pollinations.ai/keys");
+    collect("POLLINATIONS_API_KEY", "[pollinations-per-project-key]");
+  } else {
+    const acctKey = env("POLLINATIONS_ACCOUNT_KEY");
+    if (!acctKey) {
+      manual(
+        "Set POLLINATIONS_ACCOUNT_KEY in .scaffold-secrets",
+        [
+          "Go to enter.pollinations.ai/keys → Create key",
+          "Type: secret, and grant it the account:keys permission (needed to create child keys)",
+        ]
+      );
+      collect("POLLINATIONS_API_KEY", "[manual]");
+    } else {
+      const r = await httpPost(
+        "https://gen.pollinations.ai/account/keys",
+        { Authorization: `Bearer ${acctKey}` },
+        { name: `${PROJECT_NAME}-prod`, type: "secret" }
+      );
+      if (r.ok) {
+        collect("POLLINATIONS_API_KEY", r.data.key || r.data.value || r.data.data?.key || "[see response]");
+      } else {
+        console.error(c(RED, `    ✗ ${JSON.stringify(r.data)}`));
+        collect("POLLINATIONS_API_KEY", "[manual — provisioning call failed]");
+      }
+    }
+  }
+  results.push({ id: "pollinations", label: "Pollinations API key", status: DRY_RUN ? "dry" : "done", notes: "Per-project child key" });
+}
 
 // VAPID keys (Web Push)
 if (step("vapid", "Generate VAPID keypair for Web Push notifications")) {
@@ -1227,7 +1247,6 @@ if (step("env", "Write .env.local and push to Vercel")) {
   // Add global keys that come from YOUR vault
   const globalKeys = {
     GEMINI_API_KEY: env("GEMINI_API_KEY") || "[from your vault]",
-    POLLINATIONS_API_KEY: collected.POLLINATIONS_API_KEY || "[manual]",
   };
 
   const allEnv = {
@@ -1373,7 +1392,6 @@ const manualItems = [
   `☐ Google Cloud: OAuth consent screen configured`,
   `☐ Google Cloud: OAuth client → redirect URI updated with the Clerk URI`,
   `☐ Google Cloud: Submit for branding verification (optional, starts a weeks-long clock)`,
-  `☐ Pollinations: API key created at enter.pollinations.ai`,
   `☐ website-assets/${PROJECT_NAME}/: Add logo.png, favicon.ico, og-image.png`,
 ];
 for (const item of manualItems) {
