@@ -450,6 +450,13 @@ Key endpoints used by scaffold.js:
 > note named `scaffold-secrets`, synced with `node scaffold/secrets-sync.mjs
 > push|pull|status` (whole file as the note body; needs an unlocked
 > BW_SESSION; prints hashes, never values). Push after EVERY rotation.
+> Easiest way to push (2026-08-31): double-click `scaffold/bw-push.cmd` (or
+> run `bw-push.ps1` in PowerShell) — it logs in if needed, prompts once for
+> your master password to unlock, runs the push, then discards the session.
+> No BW_SESSION is ever stored anywhere; each run starts from fully locked.
+> Deliberately NOT wired for Claude to run unattended — a Bitwarden session
+> decrypts the *whole* vault, not just this one note, so unlocking stays a
+> human-only, one-click-but-password-required action.
 ```bash
 VERCEL_TOKEN=...                             # vercel.com/account/tokens → Create Token
 SPACESHIP_PUBLISHABLE_KEY=...                # spaceship.com/application/api-manager/ → API key

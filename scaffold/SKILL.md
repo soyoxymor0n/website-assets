@@ -37,7 +37,11 @@ store a deployment gets.
    secure note, kept fresh with `node scaffold/secrets-sync.mjs push` after
    every rotation (`status` to compare, `pull` to restore on a new machine).
    The script needs an unlocked `BW_SESSION` in the shell - it never prompts
-   for credentials and never prints secret values.
+   for credentials and never prints secret values. Claude never has a
+   standing BW_SESSION (that would decrypt the whole vault, not just this
+   note) - when a push is needed, tell the user to double-click
+   `scaffold/bw-push.cmd` (prompts once for their master password, pushes,
+   discards the session) rather than asking them to run CLI commands by hand.
 
 This skill is the single source of truth in `website-assets/scaffold` and is
 exposed globally via a junction in `~/.claude/skills/scaffold`; a `git pull` in
