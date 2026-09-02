@@ -195,6 +195,13 @@ function note(msg) {
 
 async function waitForEnter(prompt = "Press Enter when done...") {
   if (DRY_RUN) return;
+  // Non-interactive run (stdin is a pipe or /dev/null, e.g. an agent driving
+  // the script): a readline question would resolve on EOF or hang. Print the
+  // prompt so the transcript shows the manual step, and carry on. Hit on
+  // regplan 2026-09-02: the Google-step prompt sits outside its step() gate,
+  // so a --skip google run still stalled here and Phase 9 never ran.
+  if (!process.stdin.isTTY) { console.log(c(YELLOW, `
+    ⏸  ${prompt} (non-interactive: continuing)`)); return; }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   await new Promise((resolve) => rl.question(c(YELLOW, `\n    ⏸  ${prompt} `), () => { rl.close(); resolve(); }));
 }
@@ -204,6 +211,7 @@ async function waitForEnter(prompt = "Press Enter when done...") {
 // which it feeds the automation instead of a "[from dashboard]" placeholder.
 async function ask(question) {
   if (DRY_RUN) return "";
+  if (!process.stdin.isTTY) { console.log(c(YELLOW, `    ↳ ${question} (non-interactive: no answer)`)); return ""; }
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise((resolve) =>
     rl.question(c(YELLOW, `    ↳ ${question} `), (a) => { rl.close(); resolve(a.trim()); })
