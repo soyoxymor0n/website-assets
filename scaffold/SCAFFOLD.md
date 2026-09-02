@@ -204,6 +204,10 @@ whatever the zone needs for the subdomain automatically.
 6c. Upstash      → get QStash token → QSTASH_URL + TOKEN + signing keys
 6d. Cloudflare   → create PROD + BETA R2 buckets → R2_BUCKET_NAME(_PROD) + R2_ENDPOINT + ACCESS_KEY + SECRET
 6e. Resend       → add domain → DNS records + RESEND_API_KEY
+                   ⚠ Free tier: 3 verified domains, and verification is per EXACT
+                     domain. If {domain} is a SUBDOMAIN of an already-verified apex
+                     the step reuses that apex and adds no domain; EMAIL_FROM must
+                     then be {slug}@{apex}, never hello@{domain} (403, silent).
 6f. OpenRouter   → create per-project key → OPENROUTER_API_KEY
 6g. Pollinations → create per-project key → POLLINATIONS_API_KEY
 6h. CloudMailin  → create account (MANUAL) → create address target (MANUAL)
@@ -566,7 +570,14 @@ echo ".scaffold-secrets" >> .gitignore
 - **`UPSTASH_MANAGEMENT_API_KEY` returns 401 with Bearer auth** — key rotated or the API wants
   `Basic email:key`. Shared-Redis reuse from a sibling project's `.env` is the workaround (the
   house ratelimit module namespaces keys per project).
-- **Resend free plan = 1 domain** — adding a second domain 403s ("Your plan includes 1 domain").
+- **Resend free plan = 3 domains** (raised from 1 — resend.com/changelog/three-domains-on-the-free-tier;
+  verified 2026-09-02: the account holds `lookslike.ink`, `regops.systems`, `decide.monster`, so all
+  three slots are ALREADY taken). A 4th domain still 403s.
+- **Resend verifies an EXACT domain — subdomains are NOT covered.** Probed 2026-09-02 against
+  `delivered@resend.dev`: `hello@regops.systems` → 202; `hello@regplan.regops.systems` and
+  `regstance@send.regops.systems` → 403 "domain is not verified". So a per-module `EMAIL_FROM` on a
+  subdomain of a verified apex sends NOTHING, silently (the house `sendEmail` logs and swallows).
+  Fix without spending a domain slot: put the module in the LOCAL part — `RegPlan <regplan@regops.systems>`.
 - **Script cwd assumptions are inconsistent**: `vercel`/`turso` steps use `{ cwd: PROJECT_NAME }`
   (expects the workspaces root) but the assets step uses `../website-assets` (expects a project
   dir). Run from the workspaces root and expect the assets step to fail. The Turso env-var

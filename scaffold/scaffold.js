@@ -939,40 +939,58 @@ if (step("resend", "Resend → add domain & create API key")) {
     const key = env("RESEND_API_KEY");
     if (!key) {
       manual("Set RESEND_API_KEY in .scaffold-secrets (your global key)");
+      results.push({ id: "resend", label: "Resend domain + API key", status: "manual", notes: "" });
     } else {
-      const domainRes = await httpPost(
-        "https://api.resend.com/domains",
-        { Authorization: `Bearer ${key}` },
-        { name: PROJECT_DOMAIN }
-      );
-      if (domainRes.ok) {
-        const domainId = domainRes.data.id;
-        info(`Domain added: ${domainRes.data.name}`);
-        note("DNS records queued for Vercel (added in Phase 4):");
-        // Resend's shape: `type` is the DNS type (MX/TXT/CNAME), `record` is the
-        // semantic label (SPF/DKIM), `name` is already relative to the zone, and
-        // MX rows carry `priority`. There is no `record_type` field.
-        for (const rec of (domainRes.data.records || [])) {
-          console.log(c(YELLOW, `      ${rec.type} ${rec.name} → ${rec.value}`));
-          pendingDns.resend.push({
-            type: rec.type,
-            host: rec.name,
-            value: rec.value,
-            priority: rec.priority,
-          });
-        }
-        const keyRes = await httpPost(
-          "https://api.resend.com/api-keys",
-          { Authorization: `Bearer ${key}` },
-          { name: PROJECT_NAME, permission: "sending_access", domain_id: domainId }
-        );
-        if (keyRes.ok) collect("RESEND_API_KEY", keyRes.data.token);
+      // Resend verifies an EXACT domain - a SUBDOMAIN of a verified apex is NOT
+      // covered, and sends from one 403 silently (the house sendEmail logs and
+      // swallows). So before spending one of the three free-tier domain slots,
+      // check whether this project's domain is already covered by an apex we
+      // have: if it is, reuse it and send as <slug>@<apex>. (Five RegOps modules
+      // shipped unable to send at all before this check existed - 2026-09-02.)
+      const existing = await httpGet("https://api.resend.com/domains", { Authorization: `Bearer ${key}` });
+      const verified = (existing.ok && Array.isArray(existing.data?.data) ? existing.data.data : []).map((d) => d.name);
+      const apex = PROJECT_DOMAIN.split(".").slice(1).join(".");
+      const coveringApex = verified.includes(PROJECT_DOMAIN) ? null : verified.find((d) => d === apex);
+      if (coveringApex) {
+        info(`${PROJECT_DOMAIN} is a subdomain of the already-verified ${coveringApex} - no new domain slot needed`);
+        note(`Set EMAIL_FROM="${PROJECT_NAME} <${PROJECT_NAME.toLowerCase()}@${coveringApex}>" (NOT hello@${PROJECT_DOMAIN} - that 403s)`);
+        results.push({ id: "resend", label: "Resend (reused verified apex)", status: "done", notes: coveringApex });
       } else {
-        console.error(c(RED, `    ✗ ${JSON.stringify(domainRes.data)}`));
+        const domainRes = await httpPost(
+          "https://api.resend.com/domains",
+          { Authorization: `Bearer ${key}` },
+          { name: PROJECT_DOMAIN }
+        );
+        if (domainRes.ok) {
+          const domainId = domainRes.data.id;
+          info(`Domain added: ${domainRes.data.name}`);
+          note("DNS records queued for Vercel (added in Phase 4):");
+          // Resend's shape: `type` is the DNS type (MX/TXT/CNAME), `record` is the
+          // semantic label (SPF/DKIM), `name` is already relative to the zone, and
+          // MX rows carry `priority`. There is no `record_type` field.
+          for (const rec of (domainRes.data.records || [])) {
+            console.log(c(YELLOW, `      ${rec.type} ${rec.name} → ${rec.value}`));
+            pendingDns.resend.push({
+              type: rec.type,
+              host: rec.name,
+              value: rec.value,
+              priority: rec.priority,
+            });
+          }
+          const keyRes = await httpPost(
+            "https://api.resend.com/api-keys",
+            { Authorization: `Bearer ${key}` },
+            { name: PROJECT_NAME, permission: "sending_access", domain_id: domainId }
+          );
+          if (keyRes.ok) collect("RESEND_API_KEY", keyRes.data.token);
+        } else {
+          console.error(c(RED, `    ✗ ${JSON.stringify(domainRes.data)}`));
+        }
+        results.push({ id: "resend", label: "Resend domain + API key", status: "done", notes: "" });
       }
     }
   }
-  results.push({ id: "resend", label: "Resend domain + API key", status: DRY_RUN ? "dry" : "done", notes: "" });
+  if (DRY_RUN) results.push({ id: "resend", label: "Resend domain + API key", status: "dry", notes: "" });
 }
 
 // OpenRouter
