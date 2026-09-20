@@ -87,6 +87,7 @@ node scaffold.js --name myapp --domain myapp.com --run --skip spaceship,github
 | Clerk app creation | 🔴 Always manual | No public Platform API for creating apps. Dashboard only. |
 | Clerk **Organizations** (enable + limits) | 🟢 Automated | `GET`/`PATCH /v1/instance/organization_settings` with Bearer sk_. `GET` returns `{enabled, max_allowed_memberships, max_allowed_roles, creator_role, admin_delete_enabled, domains_enabled, ...}`; `PATCH {"enabled":true,"max_allowed_memberships":20}` → 200. Verified live on regvoice's dev instance 2026-08-22. **Do not confuse with app creation above** - the instance must already exist; this only flips the feature ON for it. Before enabling, `/v1/organizations` 403s with `organization_not_enabled_in_instance`, which is the cheap read-only way to test the state. ⚠️ Re-READ the resource after the PATCH rather than trusting its echo - the oauth_google row below is why that habit exists. 20 members is the free (Hobby) plan's per-org ceiling; 100 orgs per app are included. 🚨 **`enabled:true` also flips `force_organization_selection` to TRUE as a side effect, even though you did not send it.** On a live instance that puts an organisation-selection wall in front of every existing user at sign-in. Send a second `PATCH {"force_organization_selection":false}` immediately and re-read. Hit on regops.systems production 2026-08-22; all three instances patched that day had it. This is the concrete reason the re-read rule above is not paranoia - the PATCH echo shows it too, but only if you look at a field you never set. |
 | Clerk instance STATE without any key | 🟢 Automated | The publishable key is public (it ships in the client bundle) and is base64 of the frontend host: `pk_live_Y2xlcmsucmVnb3BzLnN5c3RlbXMk` → `clerk.regops.systems`. That host answers **unauthenticated** `GET /v1/environment?__clerk_api_version=2021-02-05&_clerk_js_version=5` with `display_config.instance_environment_type`, `application_name`, `home_url` and the whole `organization_settings` block. So you can read ANY deployed instance's config - including whether organizations are on - straight off its live site with curl, no secret, no dashboard. Scrape the pk from the site's JS bundle. Verified 2026-08-22. Complements the key-RECOVERY row below: reading state is free, writing it still needs the sk. |
+| Clerk default user avatar (Solid + primary colour, Initials foreground) | 🔴 Manual (no known API) | Only after you have manually created the Clerk app (see the row above). Dashboard only: Configure → Customization → Avatars → Default user avatar. Background: Solid + hex of the app's `--primary`; Foreground: Initials + hex of `--primary-foreground`, ≥4.5:1 contrast. Per instance, so repeat on dev and prod. Not probed against the Backend API — if you find an endpoint, replace this row and script it. Colours must be hex: convert the OKLCH tokens first. |
 | Clerk DNS records → Vercel | 🟢 Automated | `GET /v1/domains` with Bearer sk_live_ → `cname_targets[]` (`host`/`value`/`required`) = exactly what the dashboard's "Copy DNS instructions" button emits. Needs the **production** key: an `sk_test_` instance has no custom domain and returns no targets. Verified live 2026-07-15. |
 | Clerk Google OAuth config | 🔴 Always manual | `PATCH /v1/instance/social_connections/oauth_google` returns 404 — endpoint does not exist. ⚠️ False-positive risk: sloppy error handling can print "success" on a 404. Dashboard only: Configure → SSO → Google → "Use custom credentials" → paste Client ID + Secret |
 | Clerk keys → Vercel | 🟡 Partial (doc was aspirational — corrected 2026-07-19) | Phase 6 collects ONLY the prod instance (pk_live/sk_live) and Phase 9 pushes EVERY var to `target:["production"]` ONLY (scaffold.js ~L1039). So the dev-instance keys (pk_test/sk_test), the preview+development scopes, and the `VITE_` publishable mirror are NOT automated — set per-scope by hand via REST upsert (below). **Never `vercel env add`**: its stdin path prints `✓ Added` but stores an EMPTY value on Windows PowerShell (bit hejsmart 2026-07-19). Verify every write with `vercel env pull <f> --environment=<production\|preview\|development>`. Active CLI token: `%APPDATA%\xdg.data\com.vercel.cli\auth.json` (`.token`); the `\com.vercel.cli\Data\` copy is stale → 403. Scope map: dev `pk_test/sk_test` → preview+development, prod `pk_live/sk_live` → production, unsuffixed names (`VITE_CLERK_PUBLISHABLE_KEY`+`CLERK_PUBLISHABLE_KEY`+`CLERK_SECRET_KEY`). **TODO: make Phase 9 `_PROD`-aware (see Known Limitations).** |
@@ -261,6 +262,14 @@ whatever the zone needs for the subdomain automatically.
          → configure Google SSO with CLIENT_ID + CLIENT_SECRET
          → enable email+password
          → set branding (name, logo from website-assets)
+         → default user avatar (Configure → Customization → Avatars) — only
+           possible AFTER you have created the app by hand above; the script
+           cannot create it, so this is customised second. Do it on the dev
+           AND prod instance: Background = Solid, the app's primary colour (hex);
+           Foreground = Initials, in the theme's --primary-foreground (hex),
+           ≥4.5:1 contrast against the background (fall back to #FFFFFF/#111111).
+           Never leave Clerk's default marble/silhouette — it is the one
+           un-themed surface a signed-in user sees on every page.
          → paste when prompted: CLERK_PUBLISHABLE_KEY + CLERK_SECRET_KEY
          → paste when prompted: Clerk redirect URI → (goes back to Google in phase 8)
          → DNS records: NOT copied by hand. The script calls GET /v1/domains
@@ -450,10 +459,17 @@ Key endpoints used by scaffold.js:
 > beside it. The scaffold script resolves this well-known path first from any
 > cwd; `~/.claude/scaffold-secrets` is a legacy fallback only — keeping a copy
 > there causes rotation drift (one copy updated, the other silently stale).
-> No cloud/git backup by design — the recovery path is a Bitwarden secure
-> note named `scaffold-secrets`, synced with `node scaffold/secrets-sync.mjs
-> push|pull|status` (whole file as the note body; needs an unlocked
-> BW_SESSION; prints hashes, never values). Push after EVERY rotation.
+> No cloud/git backup by design — the recovery path is Bitwarden, synced
+> with `node scaffold/secrets-sync.mjs push|pull|status`. The file is split
+> across secure notes named `scaffold-secrets-chunk-01`, `-02`, … whose
+> bodies concatenate back into the original — NOT one note and NOT an
+> attachment, both tried and rejected live 2026-08-31: one note's `notes`
+> field caps at 10000 *encrypted* characters (the real file already exceeds
+> that at ~7.5KB plaintext, confirmed by the server error, not a guess), and
+> attachments need Bitwarden Premium (confirmed by the server's "Premium
+> status is required" error against a free account). Chunked notes work on
+> the free tier with effectively no ceiling. Needs an unlocked BW_SESSION;
+> prints hashes, never values. Push after EVERY rotation.
 > Easiest way to push (2026-08-31): double-click `scaffold/bw-push.cmd` (or
 > run `bw-push.ps1` in PowerShell) — it logs in if needed, prompts once for
 > your master password to unlock, runs the push, then discards the session.
