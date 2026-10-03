@@ -31,6 +31,7 @@ import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { createHash } from "crypto";
 import readline from "readline";
+import { connectHub, isHubModule } from "./hub-connect.mjs";
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
 
@@ -1439,6 +1440,25 @@ if (step("env", "Write .env.local and push to Vercel")) {
   }
 
   results.push({ id: "env", label: "Env vars", status: DRY_RUN ? "dry" : "done", notes: envPath });
+}
+
+// ─── PHASE 9b: Connect a RegOps module to the hub ────────────────────────────
+// Every reg* module talks to the hub with the same two env vars (HUB_URL and the ONE shared
+// HUB_SERVICE_TOKEN). It used to be a thing the owner remembered after the module was built; now it
+// is part of building one. hub-connect.mjs is idempotent and never overwrites a value a module
+// already holds. The token lives once in .scaffold-secrets as HUB_SERVICE_TOKEN.
+if (isHubModule(PROJECT_NAME)) {
+  header("9b", "Connect to the RegOps hub");
+  if (step("hub", "Vercel → HUB_URL + HUB_SERVICE_TOKEN")) {
+    const lines = await connectHub({
+      name: PROJECT_NAME,
+      vercelToken: env("VERCEL_TOKEN"),
+      hubToken: env("HUB_SERVICE_TOKEN"),
+      dryRun: DRY_RUN,
+    });
+    for (const l of lines) (l.ok ? info : manual)(l.line);
+    results.push({ id: "hub", label: "Hub connection (HUB_URL + HUB_SERVICE_TOKEN)", status: DRY_RUN ? "dry" : lines.every((l) => l.ok) ? "done" : "manual", notes: "" });
+  }
 }
 
 // ─── PHASE 10: Deploy ────────────────────────────────────────────────────────
