@@ -566,6 +566,33 @@ if (step("vercel", "Vercel → create project & link repo")) {
     cmd(`vercel domains add ${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
     // www → non-www redirect
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`, { cwd: PROJECT_NAME });
+    // Create the DNS ZONE on Vercel. Pointing the nameservers at Vercel (Phase 1)
+    // and attaching the domain does NOT create one: the domain flips to
+    // serviceType "zeit.world" but has no zone, ns1/ns2.vercel-dns.com answer
+    // REFUSED and every resolver SERVFAILs, indefinitely (blpri.com, 2026-10-03:
+    // 4h until the dashboard's "Vercel DNS" tab was clicked, which logged
+    // "You enabled DNS zone" and fixed it within a minute). That click is
+    // PATCH /v3/domains/{domain} {op:"update", zone:true}, proven on a throwaway
+    // domain the same day. Idempotent, so always send it.
+    if (vercelToken && vercelProject) {
+      const zr = await httpPatch(
+        `https://api.vercel.com/v3/domains/${PROJECT_DOMAIN}${vercelTeamParam}`,
+        { Authorization: `Bearer ${vercelToken}` },
+        { op: "update", zone: true }
+      );
+      if (zr.ok && zr.data?.zone === true) {
+        info(`Vercel DNS zone enabled for ${PROJECT_DOMAIN}`);
+      } else {
+        console.error(c(RED, `    ✗ Failed to enable the DNS zone: ${zr.status} ${JSON.stringify(zr.data)}`));
+        manual(`Enable the DNS zone for ${PROJECT_DOMAIN} manually`, [
+          `Dashboard → Domains → ${PROJECT_DOMAIN} → "Vercel DNS" tab (this is what creates the zone)`,
+        ]);
+      }
+    } else {
+      manual(`Enable the DNS zone for ${PROJECT_DOMAIN} (VERCEL_TOKEN not available to automate this)`, [
+        `Dashboard → Domains → ${PROJECT_DOMAIN} → "Vercel DNS" tab`,
+      ]);
+    }
     // beta.<domain> scoped to the `beta` git branch — a stable preview URL
     // for day-to-day work instead of an ephemeral *.vercel.app one. Requires
     // the domain's NS to already point at Vercel (Phase 1) — no separate DNS
@@ -628,6 +655,7 @@ if (step("vercel", "Vercel → create project & link repo")) {
     note(`Would PATCH productionBranch=main via REST (don't trust Vercel's auto-detection from whatever branches exist on the remote at link time)`);
     cmd(`vercel domains add ${PROJECT_DOMAIN}`);
     cmd(`vercel domains add www.${PROJECT_DOMAIN}`);
+    note(`Would PATCH /v3/domains/${PROJECT_DOMAIN} {op:"update", zone:true} (creates the Vercel DNS zone; NS delegation alone does not)`);
     note(`Would POST beta.${PROJECT_DOMAIN} with gitBranch: "beta" via REST (stable preview URL for the beta branch; CLI has no branch-scoping flag)`);
     note(`Would PATCH www.${PROJECT_DOMAIN} → 301 redirect → ${PROJECT_DOMAIN}`);
     note(`Would pin function region: "regions": ["dub1"] in vercel.json (matches Turso aws-eu-west-1)`);
