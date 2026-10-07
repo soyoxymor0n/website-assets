@@ -52,11 +52,28 @@ export function readSecrets() {
 }
 
 /** The env vars a module needs, with the Vercel type and scopes of each. Pure, so a test can read the plan. */
-export function plan({ hubUrl = DEFAULT_HUB_URL, token }) {
+export function plan({ hubUrl = DEFAULT_HUB_URL, token, shared = {} }) {
   const rows = [{ key: 'HUB_URL', value: hubUrl, type: 'plain', target: ['production', 'preview', 'development'] }];
   if (token) {
     rows.push({ key: 'HUB_SERVICE_TOKEN', value: token, type: 'sensitive', target: ['production', 'preview'] });
     rows.push({ key: 'HUB_SERVICE_TOKEN', value: token, type: 'encrypted', target: ['development'] });
+  }
+  // The suite signs in through ONE Clerk application (the regops one): a module never gets its own.
+  // Dev instance keys (CLERK_*_REGOPS) -> Preview + Development, live keys (CLERK_*_REGOPS_PROD) -> Production.
+  for (const [suffix, scopes] of [['', ['preview', 'development']], ['_PROD', ['production']]]) {
+    const pk = shared['CLERK_PUBLISHABLE_KEY_REGOPS' + suffix];
+    const sk = shared['CLERK_SECRET_KEY_REGOPS' + suffix];
+    if (pk) for (const key of ['CLERK_PUBLISHABLE_KEY', 'VITE_CLERK_PUBLISHABLE_KEY']) rows.push({ key, value: pk, type: 'plain', target: scopes });
+    if (sk) {
+      const sens = scopes.filter((s) => s !== 'development');
+      if (sens.length) rows.push({ key: 'CLERK_SECRET_KEY', value: sk, type: 'sensitive', target: sens });
+      if (scopes.includes('development')) rows.push({ key: 'CLERK_SECRET_KEY', value: sk, type: 'encrypted', target: ['development'] });
+    }
+  }
+  // Mail goes out from the suite's one verified domain (regops.systems), with the one account key.
+  if (shared.RESEND_API_KEY) {
+    rows.push({ key: 'RESEND_API_KEY', value: shared.RESEND_API_KEY, type: 'sensitive', target: ['production', 'preview'] });
+    rows.push({ key: 'RESEND_API_KEY', value: shared.RESEND_API_KEY, type: 'encrypted', target: ['development'] });
   }
   return rows;
 }
@@ -93,9 +110,9 @@ export async function projectIdOf(name, vercelToken) {
 }
 
 /** Push the hub env vars to one project. Returns one line per variable; never the token. */
-export async function connectHub({ name, vercelToken, hubToken, hubUrl = DEFAULT_HUB_URL, dryRun = true, force = false }) {
+export async function connectHub({ name, vercelToken, hubToken, hubUrl = DEFAULT_HUB_URL, dryRun = true, force = false, shared = {} }) {
   if (!isHubModule(name)) return [{ ok: false, line: `${name}: not a RegOps module, skipped` }];
-  const rows = plan({ hubUrl, token: hubToken });
+  const rows = plan({ hubUrl, token: hubToken, shared });
   if (!hubToken) return [{ ok: false, line: `${name}: HUB_SERVICE_TOKEN is not in .scaffold-secrets - add it once and re-run` }];
   if (dryRun) return rows.map((r) => ({ ok: true, line: `${name}: would set ${r.key} (${r.type}) -> ${r.target.join('+')}` }));
   const id = await projectIdOf(name, vercelToken);
@@ -132,7 +149,7 @@ async function main() {
   }
   let failed = 0;
   for (const name of names) {
-    for (const r of await connectHub({ name, vercelToken: secrets.VERCEL_TOKEN, hubToken: secrets.HUB_SERVICE_TOKEN, hubUrl: get('--hub-url') ?? DEFAULT_HUB_URL, dryRun, force: argv.includes('--force') })) {
+    for (const r of await connectHub({ name, vercelToken: secrets.VERCEL_TOKEN, hubToken: secrets.HUB_SERVICE_TOKEN, shared: secrets, hubUrl: get('--hub-url') ?? DEFAULT_HUB_URL, dryRun, force: argv.includes('--force') })) {
       console.log(`${r.ok ? ' ok ' : 'FAIL'} ${r.line}`);
       if (!r.ok) failed++;
     }

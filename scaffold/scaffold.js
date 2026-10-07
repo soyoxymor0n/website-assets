@@ -46,6 +46,13 @@ const PROJECT_NAME = get("--name");
 const PROJECT_DOMAIN = get("--domain");
 const DRY_RUN = !has("--run");
 const SKIP_STEPS = (get("--skip") || "").split(",").filter(Boolean);
+// A RegOps module lives on <name>.regops.systems and shares the suite's identity: the apex zone and its
+// DNS, the ONE Clerk application, the one Google project and the one Resend domain already exist. So it
+// skips every step that would create a second of them (Phase 9b hands the shared Clerk + Resend keys to
+// Vercel). Pass --own-identity to force the old standalone behaviour.
+if (PROJECT_NAME && PROJECT_DOMAIN && /^reg[a-z0-9-]+$/.test(PROJECT_NAME) && PROJECT_NAME !== "regops-suite" && PROJECT_DOMAIN.endsWith(".regops.systems") && !has("--own-identity")) {
+  for (const id of ["spaceship", "github", "deploy", "resend", "dns-pass1", "email-forwarding", "google", "clerk", "dns-pass2"]) if (!SKIP_STEPS.includes(id)) SKIP_STEPS.push(id);
+}
 const TEMPLATE_REPO = get("--template") || ""; // optional: "yourghuser/template-repo"
 const ASSETS_REPO = get("--assets-repo") || "website-assets"; // your public assets repo name
 const GH_USER = get("--gh-user") || ""; // your GitHub username
@@ -1454,6 +1461,7 @@ if (isHubModule(PROJECT_NAME)) {
       name: PROJECT_NAME,
       vercelToken: env("VERCEL_TOKEN"),
       hubToken: env("HUB_SERVICE_TOKEN"),
+      shared: Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLERK_(PUBLISHABLE|SECRET)_KEY_REGOPS(_PROD)?|RESEND_API_KEY)$/.test(k))),
       dryRun: DRY_RUN,
     });
     for (const l of lines) (l.ok ? info : manual)(l.line);
