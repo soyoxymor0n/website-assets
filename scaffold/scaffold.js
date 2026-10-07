@@ -1461,7 +1461,7 @@ if (isHubModule(PROJECT_NAME)) {
       name: PROJECT_NAME,
       vercelToken: env("VERCEL_TOKEN"),
       hubToken: env("HUB_SERVICE_TOKEN"),
-      shared: Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLERK_(PUBLISHABLE|SECRET)_KEY_REGOPS(_PROD)?|RESEND_API_KEY)$/.test(k))),
+      shared: Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(CLERK_(PUBLISHABLE|SECRET)_KEY_REGOPS(_PROD)?|RESEND_API_KEY|QSTASH_(URL|TOKEN|CURRENT_SIGNING_KEY|NEXT_SIGNING_KEY))$/.test(k))),
       dryRun: DRY_RUN,
     });
     for (const l of lines) (l.ok ? info : manual)(l.line);

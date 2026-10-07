@@ -70,6 +70,13 @@ export function plan({ hubUrl = DEFAULT_HUB_URL, token, shared = {} }) {
       if (scopes.includes('development')) rows.push({ key: 'CLERK_SECRET_KEY', value: sk, type: 'encrypted', target: ['development'] });
     }
   }
+  // QStash is one account-wide token + signing key pair, identical on every module.
+  for (const key of ['QSTASH_URL', 'QSTASH_TOKEN', 'QSTASH_CURRENT_SIGNING_KEY', 'QSTASH_NEXT_SIGNING_KEY']) {
+    if (!shared[key]) continue;
+    if (key === 'QSTASH_URL') { rows.push({ key, value: shared[key], type: 'plain', target: ['production', 'preview', 'development'] }); continue; }
+    rows.push({ key, value: shared[key], type: 'sensitive', target: ['production', 'preview'] });
+    rows.push({ key, value: shared[key], type: 'encrypted', target: ['development'] });
+  }
   // Mail goes out from the suite's one verified domain (regops.systems), with the one account key.
   if (shared.RESEND_API_KEY) {
     rows.push({ key: 'RESEND_API_KEY', value: shared.RESEND_API_KEY, type: 'sensitive', target: ['production', 'preview'] });
