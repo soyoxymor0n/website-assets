@@ -50,7 +50,8 @@ const SKIP_STEPS = (get("--skip") || "").split(",").filter(Boolean);
 // DNS, the ONE Clerk application, the one Google project and the one Resend domain already exist. So it
 // skips every step that would create a second of them (Phase 9b hands the shared Clerk + Resend keys to
 // Vercel). Pass --own-identity to force the old standalone behaviour.
-if (PROJECT_NAME && PROJECT_DOMAIN && /^reg[a-z0-9-]+$/.test(PROJECT_NAME) && PROJECT_NAME !== "regops-suite" && PROJECT_DOMAIN.endsWith(".regops.systems") && !has("--own-identity")) {
+const SHARED_IDENTITY = !!PROJECT_NAME && !!PROJECT_DOMAIN && /^reg[a-z0-9-]+$/.test(PROJECT_NAME) && PROJECT_NAME !== "regops-suite" && PROJECT_DOMAIN.endsWith(".regops.systems") && !has("--own-identity");
+if (SHARED_IDENTITY) {
   for (const id of ["spaceship", "github", "deploy", "resend", "dns-pass1", "email-forwarding", "google", "clerk", "dns-pass2"]) if (!SKIP_STEPS.includes(id)) SKIP_STEPS.push(id);
 }
 const TEMPLATE_REPO = get("--template") || ""; // optional: "yourghuser/template-repo"
@@ -490,7 +491,83 @@ if (step("assets", `GitHub → create assets folder in ${ASSETS_REPO}`)) {
   results.push({ id: "assets", label: "Assets folder", status: DRY_RUN ? "dry" : "done", notes: `website-assets/${PROJECT_NAME}/` });
 }
 
+// The Vercel team every RegOps module lives in (the same id hub-connect.mjs uses).
+const SUITE_TEAM_ID = env("VERCEL_TEAM_ID") || "team_7JHGcnNhlivZXSLbphdg5D6E";
+
+// A RegOps module's Vercel project, non-interactive. The suite's zone (regops.systems) and its DNS already
+// exist, so this never touches the zone, the www redirect or the standalone DNS steps. It links the folder
+// to the project (only when no .vercel link exists), attaches <name>.regops.systems and
+// beta.<name>.regops.systems (git branch beta), sets productionBranch to main and pins the region. Idempotent.
+async function moduleVercel() {
+  const vercelToken = env("VERCEL_TOKEN");
+  const projectFile = join(PROJECT_NAME, ".vercel", "project.json");
+  const prod = `${PROJECT_NAME}.regops.systems`;
+  const beta = `beta.${PROJECT_NAME}.regops.systems`;
+  if (DRY_RUN) {
+    note(`Would link ${PROJECT_NAME} non-interactively: vercel link --yes --project ${PROJECT_NAME} --team ${SUITE_TEAM_ID} (skipped when .vercel exists)`);
+    note(`Would attach ${prod} and ${beta} (git branch beta) via POST /v10/projects/{id}/domains. The regops.systems zone is shared and is NOT touched`);
+    note(`Would PATCH productionBranch=main and pin "regions": ["dub1"] in vercel.json`);
+    return;
+  }
+  if (!vercelToken) {
+    manual("Set VERCEL_TOKEN in .scaffold-secrets, then re-run with --skip github,spaceship,deploy,resend,dns-pass1,email-forwarding,google,clerk,dns-pass2", []);
+    return;
+  }
+  const auth = { Authorization: `Bearer ${vercelToken}` };
+  const teamQuery = `?teamId=${SUITE_TEAM_ID}`;
+  if (!existsSync(projectFile)) {
+    // An existing project (regvoice, regpeer, ...) is linked by writing its id, so the Vercel CLI is not needed.
+    // Only a project that does not exist yet goes through `vercel link`, which creates it.
+    const found = await httpGet(`https://api.vercel.com/v9/projects/${PROJECT_NAME}${teamQuery}`, auth);
+    if (found.ok) {
+      mkdirSync(join(PROJECT_NAME, ".vercel"), { recursive: true });
+      writeFileSync(projectFile, JSON.stringify({ projectId: found.data.id, orgId: SUITE_TEAM_ID }) + "\n");
+      info(`Linked ${PROJECT_NAME} to existing Vercel project ${found.data.id}`);
+    } else {
+      cmd(`vercel link --yes --project ${PROJECT_NAME} --team ${SUITE_TEAM_ID} --non-interactive`, { cwd: PROJECT_NAME });
+    }
+  }
+  const { projectId } = JSON.parse(readFileSync(projectFile, "utf8"));
+
+  const attached = async () => {
+    const list = await httpGet(`https://api.vercel.com/v9/projects/${projectId}/domains${teamQuery}`, auth);
+    return new Set((list.data?.domains || []).map((d) => d.name));
+  };
+  const have = await attached();
+  for (const [name, gitBranch] of [[prod, null], [beta, "beta"]]) {
+    if (have.has(name)) {
+      info(`${name} already attached`);
+      continue;
+    }
+    const r = await httpPost(`https://api.vercel.com/v10/projects/${projectId}/domains${teamQuery}`, auth, gitBranch ? { name, gitBranch } : { name });
+    if (r.ok) info(`Attached ${name}${gitBranch ? ` (git branch ${gitBranch})` : ""}`);
+    else {
+      console.error(c(RED, `    ✗ Failed to attach ${name}: ${r.status} ${JSON.stringify(r.data)}`));
+      manual(`Attach ${name}${gitBranch ? ` scoped to the ${gitBranch} branch` : ""} manually`, [
+        `Dashboard → ${PROJECT_NAME} → Settings → Domains → Add → ${name}${gitBranch ? ` → Git Branch: ${gitBranch}` : ""}`,
+      ]);
+    }
+  }
+
+  // Vercel rejects productionBranch as a PATCH on a linked project (SCAFFOLD.md), so the value is read back. A project
+  // linked while main was the default already reads main; anything else needs the dashboard.
+  const pb = await httpRequest("PATCH", `https://api.vercel.com/v9/projects/${projectId}${teamQuery}`, auth, { productionBranch: "main" });
+  const now = pb.ok ? pb.data : (await httpGet(`https://api.vercel.com/v9/projects/${projectId}${teamQuery}`, auth)).data;
+  if (now?.link?.productionBranch === "main") info("productionBranch is main");
+  else manual("Set the production branch to `main` manually", [`Dashboard → ${PROJECT_NAME} → Settings → Git → Production Branch → main`]);
+
+  const vercelJsonPath = join(PROJECT_NAME, "vercel.json");
+  const vercelCfg = existsSync(vercelJsonPath) ? JSON.parse(readFileSync(vercelJsonPath, "utf8")) : {};
+  if (!vercelCfg.regions) {
+    writeFileSync(vercelJsonPath, JSON.stringify({ regions: ["dub1"], ...vercelCfg }, null, 2) + "\n");
+    info(`Pinned function region to dub1 in ${vercelJsonPath}`);
+  }
+}
+
 if (step("vercel", "Vercel → create project & link repo")) {
+  if (SHARED_IDENTITY) {
+    await moduleVercel();
+  } else {
   note("This will prompt interactively — choose the GitHub repo you just created");
   note(`Framework detection: pick your stack (Next.js, etc.)`);
   note(`Root directory: . (or wherever your app lives)`);
@@ -668,6 +745,7 @@ if (step("vercel", "Vercel → create project & link repo")) {
     note(`Would PATCH www.${PROJECT_DOMAIN} → 301 redirect → ${PROJECT_DOMAIN}`);
     note(`Would pin function region: "regions": ["dub1"] in vercel.json (matches Turso aws-eu-west-1)`);
   }
+  }
   results.push({ id: "vercel", label: "Vercel project + domain", status: DRY_RUN ? "dry" : "done", notes: "" });
 }
 
@@ -835,7 +913,16 @@ if (step("upstash-qstash", "Upstash → get QStash token")) {
   } else {
     const key = env("UPSTASH_MANAGEMENT_API_KEY");
     const email = env("UPSTASH_ACCOUNT_EMAIL");
-    if (key && email) {
+    if (!key && env("QSTASH_TOKEN")) {
+      // The account-wide token already lives in .scaffold-secrets and every module shares it. QStash returns
+      // the current and next signing keys under that same token, so the keys are refreshed from there.
+      const r = await fetch("https://qstash.upstash.io/v2/keys", { headers: { Authorization: `Bearer ${env("QSTASH_TOKEN")}` } });
+      const data = await r.json().catch(() => ({}));
+      collect("QSTASH_URL", "https://qstash.upstash.io");
+      collect("QSTASH_TOKEN", env("QSTASH_TOKEN"));
+      collect("QSTASH_CURRENT_SIGNING_KEY", data.current || env("QSTASH_CURRENT_SIGNING_KEY") || "[key]");
+      collect("QSTASH_NEXT_SIGNING_KEY", data.next || env("QSTASH_NEXT_SIGNING_KEY") || "[key]");
+    } else if (key && email) {
       const r = await fetch("https://api.upstash.com/v2/qstash/keys", {
         headers: upstashAuthHeader(key),
       });
@@ -1319,7 +1406,11 @@ if (step("dns-pass2", "Vercel DNS → add Clerk + Google records")) {
 
 header(8, "Close the Google ↔ Clerk loop");
 
-{
+// A RegOps module has no Google step of its own: the suite's one Clerk application and its Google client
+// already exist (SHARED_IDENTITY skips phases 5 to 7), so there is no loop to close here.
+if (SHARED_IDENTITY) {
+  info("Skipped: a RegOps module uses the suite's Clerk application and Google client");
+} else {
   manual(
     "Update Google OAuth client with real Clerk redirect URI",
     [
